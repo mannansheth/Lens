@@ -5,8 +5,8 @@ These steps start Lens from a fresh clone on Windows with PowerShell. Lens needs
 ## 1. Clone and install
 
 ```powershell
-git clone <Lens-repository-URL> lens
-cd lens
+git clone https://github.com/mannansheth/Lens.git
+cd Lens
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -19,7 +19,7 @@ If PowerShell blocks virtual-environment activation, run the environment's execu
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up -d
+docker compose up -d --wait
 docker compose ps
 ```
 
@@ -51,12 +51,12 @@ lens ask "Explain the authentication flow"
 
 Lens indexes the selected repository into its PostgreSQL database. Re-index after source changes to refresh the stored representation. Use `lens project use <directory>` to select a project when working across multiple indexed repositories.
 
-## 5. Configure answer generation (optional)
+## 5. Configure answer generation
 
 Indexing and retrieval use local embeddings and do not require an answer-generation provider. `lens ask` needs one:
 
-- **Local Ollama:** install Ollama, start its service, and download the configured model (the sample `.env` uses `qwen3:8b`): `ollama pull qwen3:8b`. Verify it with `lens model test`.
-- **Gemini:** install the optional client with `python -m pip install -e ".[gemini]"`, set `GEMINI_API_KEY` in `.env`, then select an available Gemini model with `lens model use`.
+- **Local Ollama:** install Ollama from [the official download page](https://ollama.com/download), keep its service running, and download the configured model (the sample `.env` uses `qwen3:8b`): `ollama pull qwen3:8b`. Verify it with `lens model test`.
+- **Gemini:** install the optional client with `python -m pip install -e ".[gemini]"`, set `LLM_PROVIDER=gemini`, `LLM_MODEL=gemini-3.8-flash`, and `GEMINI_API_KEY` in `.env`, then verify the provider with `lens model test`. Run `lens list models` to see the Gemini model catalogue available to Lens. Gemini sends the question and selected source evidence to Google and may incur usage charges.
 
 Ollama sends prompts to the configured local Ollama host. Gemini sends the question and selected source evidence to Google's service. Review provider settings before asking questions about private source code.
 
