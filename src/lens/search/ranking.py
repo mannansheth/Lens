@@ -35,7 +35,10 @@ def rank(
             item.ranking_signals["navigation_route_feature_boost"] = min(
                 0.90, item.ranking_signals.get("navigation_route_feature_score", 0.0) * 0.22)
     result = sorted(merged.values(), key=lambda h: (
-        -int(h.ranking_signals.get("relationship_match", False) or h.ranking_signals.get("api_path_match", False) or h.ranking_signals.get("ui_route_match", False)),
+        -int(h.ranking_signals.get("relationship_match", False) or h.ranking_signals.get("api_path_match", False) or h.ranking_signals.get("ui_route_match", False) or
+             (h.ranking_signals.get("navigation_evidence", False) and
+              (h.ranking_signals.get("navigation_route_feature_score", 0) > 0 or
+               h.ranking_signals.get("navigation_match", False)))),
         -int(h.ranking_signals.get("exact_identifier", False)),
         -int(h.ranking_signals.get("source_scope_match", False)),
         -int(h.ranking_signals.get("entity_kind_match", False)),

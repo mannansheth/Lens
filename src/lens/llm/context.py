@@ -88,12 +88,16 @@ def _relevant_navigation_links(links, query, limit=12):
         return []
     from lens.search.semantics import words
     requested = words(query) - {"where", "how", "can", "i", "do", "the", "a", "an", "of", "to", "for", "all", "me", "find", "see", "view", "page"}
+    for term in tuple(requested):
+        requested.update({"message": {"chat"}, "password": {"profile", "settings"},
+                          "change": {"edit", "update"}, "book": {"appointment"},
+                          "therapist": {"therapists"}}.get(term, set()))
     ranked = sorted(enumerate(links), key=lambda pair: (
         -len(requested & words(" ".join(str(pair[1].get(key, "")) for key in
             ("label", "controller", "action", "href", "route_template", "condition")))), pair[0]))
     positive = [link for score, link in ranked if requested & words(" ".join(str(link.get(key, "")) for key in
         ("label", "controller", "action", "href", "route_template", "condition")))]
-    return (positive or [link for _, link in ranked])[:limit]
+    return (positive if requested else [link for _, link in ranked])[:limit]
 
 
 def build_context(response, project: str, max_chars=12000, database_schema=None, query=""):

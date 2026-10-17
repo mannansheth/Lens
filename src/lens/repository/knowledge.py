@@ -17,6 +17,7 @@ def lexical_text(text: str) -> str:
 def resolve(knowledge: Knowledge) -> None:
     from lens.search.frontend_resolution import resolve as resolve_frontend
 
+    files = {file.id: file for file in knowledge.files}
     _application_links(knowledge)
     resolve_frontend(knowledge)
     entities = knowledge.entities
@@ -75,7 +76,10 @@ def resolve(knowledge: Knowledge) -> None:
             for relation in render_edges.get(source.id, []):
                 if relation.source_id == source.id and relation.kind == "RENDERS" and relation.target_id and relation.target_name in route.get("renders", []):
                     target = by_id[relation.target_id]
-                    target.metadata.setdefault("incoming_routes", []).append({"path": route["path"], "owner": source.qualified_name})
+                    target.metadata.setdefault("incoming_routes", []).append({
+                        "path": route["path"], "owner": source.qualified_name,
+                        "source_file": files[source.file_id].path, "line": route.get("line"),
+                    })
     for relationship in knowledge.relationships:
         if relationship.target_id:
             continue
@@ -484,6 +488,8 @@ def chunks(knowledge: Knowledge, application: str) -> list[DocumentChunk]:
                     "requests": entity.metadata.get("requests", []),
                     "routes": entity.metadata.get("routes", []),
                     "incoming_routes": entity.metadata.get("incoming_routes", []),
+                    "ui_text": entity.metadata.get("ui_text", []),
+                    "string_evidence": entity.metadata.get("string_evidence", []),
                     "navigation_links": navigation_links,
                     "page_title": entity.metadata.get("page_title", ""),
                     "navigation_candidate": bool(entity.metadata.get("navigation_links") or entity.metadata.get("routes") or

@@ -2,11 +2,11 @@
 
 from dataclasses import dataclass
 from time import perf_counter
-import re
 from lens.database.store import RetrievalStore
 from lens.search.embeddings import EmbeddingProvider
 from lens.core.models import SearchHit
 from lens.search.ranking import rank
+from lens.search.ranking_signals import is_navigation_query
 from lens.core.logging import event
 
 
@@ -27,13 +27,34 @@ def describe(hit: SearchHit) -> dict:
 
 def select_with_document_evidence(ranked: list[SearchHit], top_k: int,
                                   candidates: list[SearchHit] | None = None) -> list[SearchHit]:
-    """Reserve one directly topic-matched project document without dropping code context."""
+    """Reserve the most specifically topic-matched project document without dropping code context."""
     selected = list(ranked[:top_k])
-    if top_k > 1 and not any(hit.ranking_signals.get("document_topic_match") for hit in selected):
-        document = next((hit for hit in (candidates or ranked)
-                         if hit.ranking_signals.get("document_topic_match")), None)
-        if document is not None:
-            selected = [*selected[:1], document, *selected[1:top_k - 1]]
+    if top_k > 1:
+        documents = [hit for hit in (candidates or ranked)
+                     if hit.ranking_signals.get("document_topic_match")]
+        documents.sort(key=lambda hit: (-hit.ranking_signals.get("document_topic_score", 0),
+                                        -hit.hybrid_score, hit.chunk.id))
+        desired, topics = [], set()
+        for hit in documents:
+            topic = hit.ranking_signals.get("document_file_topic")
+            if topic and topic not in topics:
+                topics.add(topic)
+                desired.append(hit)
+                if len(desired) == min(2, top_k - 1):
+                    break
+        if not desired and documents:
+            desired = documents[:1]
+        for document in desired:
+            if document in selected:
+                continue
+            matching_slot = next((hit for hit in selected if hit.ranking_signals.get("document_topic_match") and
+                                  hit.ranking_signals.get("document_file_topic") not in topics), None)
+            if matching_slot is None:
+                matching_slot = next((hit for hit in reversed(selected)
+                                      if not hit.ranking_signals.get("document_topic_match")),
+                                     selected[-1] if selected else None)
+            if matching_slot is not None:
+                selected[selected.index(matching_slot)] = document
     for position, hit in enumerate(selected, 1):
         hit.rank = position
     return selected
@@ -72,9 +93,7 @@ def search(
     # semantic candidates contain generic pages sharing a broad feature word.
     # Retrieve a wider candidate pool only for these questions so route-aware
     # ranking can surface the actual UI/action evidence.
-    navigation_query = bool(re.search(
-        r"\b(page|screen|menu|navigate|navigation|access|open|find|where|edit|view|export|invoice|journal|employee|payroll|billing)\b",
-        normalized, re.I))
+    navigation_query = is_navigation_query(normalized)
     limit = max(150, top_k * 8) if navigation_query else max(60, top_k * 5)
     keyword = store.keyword_search(normalized, limit, project) if mode != "vector" else []
     vector = []

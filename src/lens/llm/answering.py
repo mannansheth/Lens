@@ -184,11 +184,17 @@ def client_navigation(context, citations, query=""):
         if links and query:
             from lens.search.semantics import words
             requested = words(query) - {"where", "how", "can", "i", "do", "the", "a", "an", "of", "to", "for", "all", "me", "find", "see", "view", "page"}
+            for term in tuple(requested):
+                requested.update({"message": {"chat"}, "password": {"profile", "settings"},
+                                  "change": {"edit", "update"}, "book": {"appointment"},
+                                  "therapist": {"therapists"}}.get(term, set()))
             scored = [(len(requested & words(" ".join(str(link.get(key, "")) for key in
                        ("label", "controller", "action", "href", "condition")))), link) for link in links]
             best = max((score for score, _ in scored), default=0)
             if best:
                 links = [link for score, link in scored if score == best]
+            else:
+                links = []
         # Prefer the link-level facts filtered for this question. Relationship
         # edges are a fallback for action-only evidence; appending all of them
         # reintroduces unrelated links (for example proforma and receipt beside
@@ -240,6 +246,31 @@ def client_navigation(context, citations, query=""):
                 step = {"instruction": "Choose " + str(label), "evidence_id": evidence_id}
                 if step not in steps:
                     steps.append(step)
+        # React Router components carry an incoming literal route after the
+        # parser resolves <Route path> to its rendered component. Preserve it
+        # as a template (for example /chat/:id), never as a live URL.
+        for route in item.get("incoming_routes", []):
+            path = str(route.get("path", "")).strip()
+            if not path.startswith("/"):
+                continue
+            dynamic = bool(re.search(r"(?:^|/)[:*][A-Za-z_]\w*|\{[^}]+\}", path))
+            destination = {"label": None, "page_title": None,
+                           "source_page_title": item.get("source_page_title") or item.get("page_title") or None,
+                           "path_template": path, "direct_url": None,
+                           "controller": None, "action": None,
+                           "routing_basis": "react_router_route",
+                           "route_expression": None,
+                           "query_parameters": [], "route_values": {},
+                           "condition": None, "dynamic_values_present": dynamic,
+                           "evidence_id": evidence_id,
+                           "source": {"file": route.get("source_file") or item.get("file"),
+                                      "line_start": route.get("line") or item.get("line_start")}}
+            destination_key = (destination["path_template"], None, None, (), ())
+            existing_keys = {(value["path_template"], value["controller"], value["action"],
+                              tuple(value["query_parameters"]), tuple(sorted(value["route_values"].items())))
+                             for value in destinations}
+            if destination_key not in existing_keys:
+                destinations.append(destination)
         if item.get("kind") == "method" and item.get("navigation_candidate"):
             qualified = next((name for name in item.get("entity_names", []) if "." in name), "")
             pieces = qualified.split(".")

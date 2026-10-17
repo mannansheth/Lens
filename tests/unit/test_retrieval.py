@@ -1,7 +1,7 @@
 import pytest
 from lens.core.models import DocumentChunk, SearchHit
 from lens.search.ranking import rank
-from lens.search.retrieval import search
+from lens.search.retrieval import search, select_with_document_evidence
 from lens.evaluation import evaluate
 from lens.search.embeddings import validate_vectors
 
@@ -122,6 +122,55 @@ def test_explicit_kind_scope_and_ui_route_are_visible():
     assert evidence["ui_route_match"]
     assert evidence["entity_kind_match"] and evidence["source_scope_match"]
     assert not signals("Which backend function handles /work/:slug?", component)["source_scope_match"]
+
+
+def test_best_topic_document_replaces_a_weaker_document_reservation():
+    def document(name, score, hybrid):
+        value = hit(name, keyword=hybrid)
+        value.chunk.language = "documentation"
+        value.chunk.metadata.update(source_type="documentation", document_topic_match=True,
+                                    document_topic_score=score)
+        value.hybrid_score = hybrid
+        value.ranking_signals.update(document_topic_match=True, document_topic_score=score)
+        return value
+
+    code = hit("unrelated code", keyword=10)
+    weak = document("Frontend dependency audit", 1, 0.5)
+    exact = document("Dependencies and maintenance", 3, 0.2)
+    selected = select_with_document_evidence([code, weak, hit("other", keyword=1)], 3,
+                                              [code, weak, exact])
+    assert exact in selected
+    assert weak not in selected
+
+
+def test_feature_questions_rank_routed_react_pages_using_visible_text():
+    from lens.search.ranking_signals import signals
+    profile = hit("frontend/src/pages/ProfileSettings.jsx::ProfileSettings").chunk
+    profile.kind = "component"
+    profile.metadata.update(navigation_candidate=True, incoming_routes=[{"path": "/profile"}],
+                            ui_text=["Profile settings", "Current password", "Confirm password change"])
+    result = signals("How do I change my password?", profile)
+    assert result["navigation_query"]
+    assert result["navigation_evidence"]
+    assert result["navigation_route_feature_score"] > 0
+
+
+def test_client_navigation_matches_semantic_feature_terms_to_api_paths():
+    from lens.search.ranking_signals import signals
+    endpoint = hit("POST /book").chunk
+    endpoint.kind = "endpoint"
+    endpoint.metadata.update(navigation_candidate=True,
+                             endpoint={"method": "POST", "path": "/book"})
+    result = signals("How do users book an appointment with a therapist?", endpoint)
+    assert result["navigation_query"]
+    assert result["navigation_route_feature_score"] > 0
+
+
+def test_whole_application_overview_does_not_expand_arbitrary_code_paths():
+    from lens.search.multihop import intent
+    result = intent("Describe the components and data flow across the whole application")
+    assert result["broad_overview"]
+    assert not result["expand"]
 
 
 def test_api_query_punctuation_is_not_part_of_url():

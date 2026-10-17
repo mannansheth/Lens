@@ -25,9 +25,14 @@ def intent(query: str) -> dict:
               "api": r"\b(api|endpoint|request)\b", "backend": r"\b(backend|handler|service)\b",
               "database": r"\b(database|table|sql|stored|procedure|columns?)\b"}
     layers = sorted(name for name, pattern in groups.items() if re.search(pattern, lower))
-    flow = bool(re.search(r"\b(chain|flow|ultimately|hops?|originates?|supplies)\b|what happens|how (?:does|do).+(?:submit|send|sav|process|travel|work)|where does.+come from|where.+fetched.+stored", lower))
+    broad_overview = bool(re.search(
+        r"\b(whole|entire|overall|across)\b.{0,50}\b(application|system|project|codebase)\b|\ball components\b",
+        lower,
+    ))
+    flow = not broad_overview and bool(re.search(r"\b(chain|flow|ultimately|hops?|originates?|supplies)\b|what happens|how (?:does|do).+(?:submit|send|sav|process|travel|work)|where does.+come from|where.+fetched.+stored", lower))
     api_flow = "api" in layers and bool(re.search(r"\b(calls?|sends?|receives?|uses?|supplies)\b", lower))
-    return {"expand": flow or len(layers) >= 2 or api_flow, "flow_language": flow,
+    return {"expand": (flow or len(layers) >= 2 or api_flow) and not broad_overview,
+            "broad_overview": broad_overview, "flow_language": flow,
             "requested_layers": layers, "query_terms": sorted(terms(query)),
             "reason": "flow_intent" if flow else "api_relationship" if api_flow else "multiple_evidence_layers" if len(layers) >= 2 else "ordinary_retrieval"}
 

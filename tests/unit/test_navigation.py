@@ -43,6 +43,61 @@ public object UpdateJournal() { return View(); }
     assert "/Journal/UpdateJournal?id=@journalId&year=@selectedYear" in view_document.embedding_text
 
 
+def test_react_router_routes_and_visible_links_support_client_navigation(tmp_path):
+    (tmp_path / "App.jsx").write_text('''import { Route, Routes } from "react-router-dom";
+import Profile from "./Profile";
+export default function App() { return <Routes><Route path="/profile" element={<Profile />} /></Routes>; }
+''')
+    (tmp_path / "Profile.jsx").write_text('''export default function Profile() {
+  return <main><h1>Profile settings</h1><label>Current password</label><button>Confirm password change</button></main>;
+}
+''')
+    (tmp_path / "Navbar.jsx").write_text('''import { Link } from "react-router-dom";
+export default function Navbar() { return <nav><Link to="/profile">Profile</Link></nav>; }
+''')
+    knowledge = parse_repository(tmp_path)
+    profile = next(symbol for symbol in knowledge.symbols if symbol.name == "Profile")
+    assert profile.metadata["incoming_routes"][0]["path"] == "/profile"
+    assert profile.metadata["incoming_routes"][0]["source_file"] == "App.jsx"
+    profile_chunk = next(chunk for chunk in chunks(knowledge, "fixture") if chunk.entity_id == profile.id)
+    assert signals("How do I change my password?", profile_chunk)["navigation_route_feature_score"] > 0
+
+    navbar = next(symbol for symbol in knowledge.symbols if symbol.name == "Navbar")
+    navbar_chunk = next(chunk for chunk in chunks(knowledge, "fixture") if chunk.entity_id == navbar.id)
+    assert navbar_chunk.metadata["navigation_links"][0]["label"] == "Profile"
+    assert navbar_chunk.metadata["navigation_links"][0]["href"] == "/profile"
+    context = SimpleNamespace(evidence={"E-profile": {
+        "file": "Profile.jsx", "line_start": 1,
+        "navigation_links": navbar_chunk.metadata["navigation_links"],
+        "incoming_routes": profile_chunk.metadata["incoming_routes"],
+        "navigation_relationships": [],
+    }})
+    result = client_navigation(context, ["E-profile"], "How do I change my password?")
+    assert result["status"] == "verified_destination"
+    assert result["destinations"][0]["label"] == "Profile"
+    assert result["destinations"][0]["path_template"] == "/profile"
+    assert result["destinations"][0]["routing_basis"] == "react_router_link"
+    assert result["steps"] == [{"instruction": "Choose Profile", "evidence_id": "E-profile"}]
+
+
+def test_react_dynamic_route_is_kept_as_a_template(tmp_path):
+    (tmp_path / "Chat.jsx").write_text('''import { Link } from "react-router-dom";
+export default function Chat({ id }) { return <Link to={`/chat/${id}`}>Chat</Link>; }
+''')
+    knowledge = parse_repository(tmp_path)
+    page = next(symbol for symbol in knowledge.symbols if symbol.name == "Chat")
+    link = page.metadata["navigation_links"][0]
+    assert link["href"] == "/chat/{dynamic}"
+    context = SimpleNamespace(evidence={"E-chat": {
+        "file": "Chat.jsx", "line_start": 1, "navigation_links": [link],
+        "navigation_relationships": [],
+    }})
+    destination = client_navigation(context, ["E-chat"], "Where can I chat?")["destinations"][0]
+    assert destination["path_template"] == "/chat/{dynamic}"
+    assert destination["direct_url"] is None
+    assert destination["dynamic_values_present"]
+
+
 def test_visible_heading_precedes_viewdata_title_and_links_keep_source_lines(tmp_path):
     view = tmp_path / "Views" / "Client" / "ClientIndex.cshtml"
     view.parent.mkdir(parents=True)
@@ -146,6 +201,23 @@ def test_context_navigation_filter_keeps_only_question_matched_route():
     ]
     selected = _relevant_navigation_links(links, "Where can I find invoices?")
     assert [link["action"] for link in selected] == ["GetInvoiceByBillingMasterId"]
+
+
+def test_context_navigation_filter_drops_all_unmatched_links():
+    links = [{"label": "Take Assessment Again", "href": "/assessment"}]
+    assert _relevant_navigation_links(links, "How do I change my password?") == []
+
+
+def test_client_navigation_does_not_return_an_unrelated_link():
+    context = SimpleNamespace(evidence={"E-page": {
+        "file": "ProfileSettings.jsx", "line_start": 10,
+        "navigation_links": [{"label": "Take Assessment Again", "href": "/assessment"}],
+        "incoming_routes": [{"path": "/profile", "source_file": "App.js", "line": 20}],
+        "navigation_relationships": [],
+    }})
+    result = client_navigation(context, ["E-page"], "How do I change my password?")
+    assert [item["path_template"] for item in result["destinations"]] == ["/profile"]
+    assert result["steps"] == []
 
 
 def test_controller_action_link_is_not_misreported_as_a_literal_url():

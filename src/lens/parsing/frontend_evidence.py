@@ -262,22 +262,49 @@ def extract(symbol: CodeSymbol, node: Node, module: CodeSymbol, file: CodeFile,
         elif item.type in {"jsx_opening_element", "jsx_self_closing_element"}:
             name = text(item.child_by_field_name("name"), data)
             attributes = {}
+            attribute_nodes = {}
             for attribute in item.named_children:
                 if attribute.type != "jsx_attribute" or not attribute.named_children:
                     continue
                 key = text(attribute.named_children[0], data)
                 value_node = attribute.named_children[1] if len(attribute.named_children) > 1 else None
                 attributes[key] = text(value_node, data) if value_node else "true"
+                attribute_nodes[key] = value_node
                 if key.startswith("on") and value_node and value_node.type == "jsx_expression":
                     child = value_node.named_children[0] if value_node.named_children else None
                     if child and child.type in {"identifier", "member_expression"}:
                         edge("REFERENCES", text(child, data), f"JSX event {key}")
             symbol.metadata.setdefault("jsx_elements", []).append({"name": name, "attributes": attributes})
+            imported = imports.get(name, {})
+            is_router_link = imported.get("source") == "react-router-dom" and name in {"Link", "NavLink"}
+            if is_router_link or name == "a":
+                target_key = "to" if is_router_link else "href"
+                target_node = attribute_nodes.get(target_key)
+                target = None
+                if target_node and target_node.type in {"string", "string_literal"}:
+                    target = literal(target_node, data)
+                elif target_node and target_node.type == "jsx_expression" and target_node.named_children:
+                    expression = target_node.named_children[0]
+                    target = literal(expression, data)
+                    if target is None and expression.type == "template_string":
+                        template = text(expression, data)[1:-1]
+                        target = re.sub(r"\$\{[^}]+\}", "{dynamic}", template)
+                if target and (target.startswith(("/", "http://", "https://"))):
+                    container = item.parent if item.parent and item.parent.type == "jsx_element" else None
+                    label = " ".join(" ".join(text(node, data).split()) for node in walk(container)
+                                     if node.type == "jsx_text") if container else ""
+                    label = " ".join(label.split())
+                    symbol.metadata.setdefault("navigation_links", []).append({
+                        "label": label or None, "href": target, "route_template": target,
+                        "line": item.start_point.row + 1,
+                        "origin": "react_router_link" if is_router_link else "html_anchor",
+                    })
             if name == "Route" and "path" in attributes:
                 elements = [text(n.child_by_field_name("name"), data) for n in walk(item)
                             if n.type in {"jsx_self_closing_element", "jsx_opening_element"} and n != item]
                 symbol.metadata.setdefault("routes", []).append({"path": attributes["path"].strip("'\""),
-                                                                   "renders": [value for value in elements if value]})
+                                                                   "renders": [value for value in elements if value],
+                                                                   "line": item.start_point.row + 1})
             if name and (name[0].isupper() or "." in name):
                 edge("RENDERS", name, "JSX element")
                 symbol.metadata.setdefault("rendered_components", []).append(name)

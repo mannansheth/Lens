@@ -187,7 +187,8 @@ def test_jsx_route_context_and_literal_express_factory(tmp_path):
         "fake.js": '''const fake = '=express()'; fake.get('/not-an-endpoint',()=>{});''',
     })
     page = next(s for s in knowledge.symbols if s.name == "Page")
-    assert page.metadata["incoming_routes"] == [{"path":"/work/:slug", "owner":"Page.jsx::App"}]
+    assert page.metadata["incoming_routes"] == [{"path": "/work/:slug", "owner": "Page.jsx::App",
+                                                   "source_file": "Page.jsx", "line": 1}]
     assert not any(s.kind == "endpoint" for s in knowledge.symbols)
 
 

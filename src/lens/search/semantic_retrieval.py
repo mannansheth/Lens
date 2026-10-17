@@ -10,7 +10,9 @@ from lens.search.ranking_signals import signals
 
 def priority(hit):
     s = hit.ranking_signals
-    return (int(s.get("relationship_match", False) or s.get("api_path_match", False) or s.get("ui_route_match", False)),
+    return (int(s.get("relationship_match", False) or s.get("api_path_match", False) or s.get("ui_route_match", False) or
+                (s.get("navigation_evidence", False) and
+                 (s.get("navigation_route_feature_score", 0) > 0 or s.get("navigation_match", False)))),
             int(s.get("exact_identifier", False)), int(s.get("source_scope_match", False)), int(s.get("entity_kind_match", False)))
 
 
@@ -98,9 +100,14 @@ def retrieve(query, understanding, ranked, store, project, top_k, provider=None)
                                "candidate_sources": sorted(set(sources[hit.chunk.id]))}
         # Bounded equal fusion of structural relevance, semantic facts and original score.
         hit.hybrid_score = (score * 4 + hit.hybrid_score) / 5
-        document_boost = 0.20 if hit.ranking_signals.get("document_topic_match") else 0.0
+        document_boost = min(0.60, hit.ranking_signals.get("document_topic_score", 0) * 0.20)
         hit.hybrid_score += document_boost
         hit.ranking_signals["document_topic_boost"] = document_boost
+        navigation_boost = min(0.48, hit.ranking_signals.get("navigation_match_score", 0.0) * 0.12)
+        route_boost = min(0.90, hit.ranking_signals.get("navigation_route_feature_score", 0.0) * 0.22)
+        hit.hybrid_score += navigation_boost + route_boost
+        hit.ranking_signals["navigation_match_boost"] = navigation_boost
+        hit.ranking_signals["navigation_route_feature_boost"] = route_boost
         # Large module aggregates are evidence context, rather than precise implementations.
         if hit.chunk.kind in {"module", "python_module"}:
             hit.hybrid_score /= 2
@@ -118,7 +125,11 @@ def retrieve(query, understanding, ranked, store, project, top_k, provider=None)
             return "configuration"
         return "implementation"
     for wanted in ("documentation", "implementation", "configuration", "integration"):
-        item = next((h for h in ordered if role(h) == wanted and
+        candidates_for_role = [h for h in ordered if role(h) == wanted]
+        if wanted == "documentation":
+            candidates_for_role.sort(key=lambda h: (-h.ranking_signals.get("document_topic_score", 0),
+                                                     -h.hybrid_score, h.chunk.id))
+        item = next((h for h in candidates_for_role if
                      ((wanted == "documentation" and h.ranking_signals.get("document_topic_match")) or
                       (priority(h) == best_priority and
                        h.ranking_signals["semantic_score"] >= (ordered[0].ranking_signals["semantic_score"] / 2) and

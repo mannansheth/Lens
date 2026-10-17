@@ -5,6 +5,16 @@ from lens.core.models import DocumentChunk
 from lens.search.frontend_resolution import path_matches
 
 
+NAVIGATION_QUERY = re.compile(
+    r"\b(page|screen|menu|navigate|navigation|access|open|find|where|edit|view|export|invoice|journal|employee|payroll|billing|change|update|manage|settings|profile|password|book|appointment|therapist|message|chat)\b",
+    re.I,
+)
+
+
+def is_navigation_query(query: str) -> bool:
+    return bool(NAVIGATION_QUERY.search(query))
+
+
 def technical_names(query: str) -> set[str]:
     words = re.findall(r"[A-Za-z_$][\w$]*(?:\.[\w$]+)*", query)
     stop = {"where", "what", "which", "how", "get", "post", "put", "delete", "react", "html", "api"}
@@ -17,7 +27,7 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
     local_name = chunk.metadata.get("entity_name", chunk.name.rsplit(".", 1)[-1].split("::")[-1]).lower()
     exact = local_name in names or chunk.name.lower() in names
     lower = query.lower()
-    navigation_query = bool(re.search(r"\b(page|screen|menu|navigate|navigation|access|open|find|where|edit|view|export|invoice|journal|employee|payroll|billing)\b", lower))
+    navigation_query = is_navigation_query(query)
     navigation_evidence = chunk.metadata.get("navigation_candidate", False)
     navigation_score, navigation_terms = 0.0, []
     route_feature_score = 0.0
@@ -34,6 +44,8 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
                     "payroll": {"salary", "wage"}, "invoice": {"invoices"},
                     "receipt": {"receipts", "payment"},
                     "review": {"summary", "billing"}, "export": {"excel", "download"},
+                    "change": {"update", "edit"}, "password": {"credential", "profile", "settings"},
+                    "message": {"chat", "messages"}, "book": {"booking", "schedule"},
                     "info": {"details", "information", "profile"},
                     "particular": {"selected", "id", "specific"}}
         expanded = set(query_terms)
@@ -41,10 +53,14 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
             expanded.update(synonyms.get(term, ()))
         evidence_text = " ".join([
             chunk.name, chunk.file, str(chunk.metadata.get("page_title", "")),
+            " ".join(str(value) for value in chunk.metadata.get("ui_text", [])),
+            " ".join(str(value) for value in chunk.metadata.get("string_evidence", [])),
             " ".join(" ".join(str(link.get(key, "")) for key in
                 ("label", "href", "route_template", "controller", "action", "condition", "query_parameters"))
                 for link in chunk.metadata.get("navigation_links", [])),
-            " ".join(str(route.get("path", "")) for route in chunk.metadata.get("routes", [])),
+            " ".join(str(route.get("path", "")) for route in
+                     [*chunk.metadata.get("routes", []), *chunk.metadata.get("incoming_routes", [])]),
+            str((chunk.metadata.get("endpoint") or {}).get("path", "")),
         ])
         evidence_terms = words(evidence_text)
         for link in chunk.metadata.get("navigation_links", []):
@@ -87,6 +103,8 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
             if any("year" in parameter for parameter in params):
                 link_terms.add("year")
             score = sum(weight for term, weight in weights.items() if term in link_terms)
+            if "message" in query_terms and re.search(r"/chat/\{dynamic\}|/chat/:[\w]+", link_text, re.I):
+                score += 1.0
             # User phrases such as "a particular journal" imply a scoped
             # destination; an explicit journal identifier parameter is strong
             # evidence even if the wording uses a different synonym.
@@ -95,6 +113,28 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
                     re.search(r"journal\w*id|journal\{[^}]*id", link_text, re.I)):
                 score += 1.25
             route_feature_score = max(route_feature_score, score)
+        # React Router pages carry a statically resolved incoming route rather
+        # than a Razor-style navigation link. Use that page's own visible text
+        # to rank it for a feature question without treating text as a URL.
+        if chunk.metadata.get("incoming_routes"):
+            route_text = " ".join([
+                chunk.name, chunk.file, str(chunk.metadata.get("page_title", "")),
+                " ".join(str(route.get("path", "")) for route in chunk.metadata.get("incoming_routes", [])),
+            ])
+            route_terms = words(route_text)
+            visible_terms = words(" ".join(str(value) for value in chunk.metadata.get("ui_text", [])))
+            page_score = len(query_terms & route_terms) + min(1.5, 0.5 * len(query_terms & visible_terms))
+            if "message" in query_terms and any(re.search(r"/chat/[:*]", str(route.get("path", "")), re.I)
+                                                  for route in chunk.metadata.get("incoming_routes", [])):
+                page_score += 1.0
+            route_feature_score = max(route_feature_score, page_score)
+        endpoint = chunk.metadata.get("endpoint") or {}
+        if endpoint:
+            endpoint_terms = words(" ".join([chunk.name, str(endpoint.get("method", "")),
+                                             str(endpoint.get("path", ""))]))
+            route_feature_score = max(route_feature_score, sum(
+                1.0 for term in expanded if term in endpoint_terms
+            ))
     relation_kind = "RENDERS" if re.search(r"\b(render|renders|rendering)\b", lower) else "CALLS" if re.search(r"\b(call|calls|calling)\b", lower) else "IMPORTS" if re.search(r"\b(import|imports)\b", lower) else None
     relationships = chunk.metadata.get("relation_evidence", [])
     matching = [relation for relation in relationships if relation["direction"] == "outgoing"
@@ -122,14 +162,29 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
     requested_scope = requested_scopes[0] if len(requested_scopes) == 1 else None
     scope_match = requested_scope is not None and requested_scope in chunk.file.split("/")
     document_topic_match = False
+    document_topic_score = 0
+    document_file_topic = None
     if chunk.metadata.get("source_type") == "documentation" or chunk.language == "documentation":
         ignored = {"explain", "describe", "tell", "show", "list", "all", "used", "use", "the", "a", "an",
                    "how", "what", "which", "does", "do", "is", "are", "about", "project", "please"}
+        ignored.update({"this", "these", "those", "application", "app", "system", "whole", "entire",
+                        "change", "update", "manage", "edit", "find", "where", "access", "open"})
         query_topics = set(re.findall(r"[a-z0-9]+", lower)) - ignored
+        broad_overview = bool(re.search(
+            r"\b(whole|entire|overall|across)\b.{0,50}\b(application|system|project|codebase)\b|\ball components\b",
+            lower,
+        ))
+        if broad_overview:
+            query_topics.add("architecture")
         document_topics = set(re.findall(r"[a-z0-9]+", chunk.file.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()))
         document_topics.update(re.findall(r"[a-z0-9]+", str(chunk.metadata.get("document_heading", "")).lower()))
         document_topics.update(re.findall(r"[a-z0-9]+", chunk.name.lower()))
         document_topic_match = bool(query_topics & document_topics)
+        file_stem = chunk.file.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+        document_file_topic = file_stem if file_stem in query_topics else None
+        document_topic_score = (len(query_topics & document_topics) +
+                                2 * int(document_file_topic is not None) +
+                                int(document_file_topic is not None and " > " not in chunk.name))
     return {"exact_identifier": bool(exact), "relationship_match": bool(matching),
             "relationship_kind": relation_kind, "matching_relationships": matching,
             "api_path_match": url_match, "ui_route_match": ui_route_match,
@@ -139,4 +194,6 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
             "navigation_evidence": bool(navigation_evidence),
             "requested_kind": requested_kind, "entity_kind_match": kind_match,
             "requested_scope": requested_scope, "source_scope_match": scope_match,
-            "document_topic_match": document_topic_match}
+            "document_topic_match": document_topic_match,
+            "document_topic_score": document_topic_score,
+            "document_file_topic": document_file_topic}
