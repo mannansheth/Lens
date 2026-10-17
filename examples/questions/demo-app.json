@@ -1,0 +1,8 @@
+[
+  {"question": "Where is GetInvoices implemented?", "expected": ["Demo.Repositories.InvoiceRepository.GetInvoices", "GetInvoices"]},
+  {"question": "Where do we calculate the amount still owed on an invoice?", "expected": ["Demo.Services.InvoiceService.CalculatePendingAmount"]},
+  {"question": "Which method calls GetInvoices?", "expected": ["Demo.Repositories.InvoiceRepository.GetInvoices", "Demo.Services.InvoiceService.GetInvoices", "Demo.Controllers.InvoiceController.GetInvoices"]},
+  {"question": "Which table stores invoices?", "expected": ["Invoices"]},
+  {"question": "Which stored procedure retrieves invoices?", "expected": ["GetInvoices"]},
+  {"question": "How does the invoice controller retrieve data from the database?", "expected": ["Demo.Controllers.InvoiceController.GetInvoices", "Demo.Services.InvoiceService.GetInvoices", "Demo.Repositories.InvoiceRepository.GetInvoices", "GetInvoices"]}
+]

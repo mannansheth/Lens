@@ -1,0 +1,5 @@
+@model Fullstack.JournalEntry
+<form asp-controller="Journal" asp-action="Create" method="post">
+  <textarea asp-for="Content"></textarea>
+  <button type="submit">Save journal</button>
+</form>

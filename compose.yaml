@@ -1,0 +1,20 @@
+﻿services:
+  database:
+    container_name: lens-postgres
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: lens
+      POSTGRES_PASSWORD: ${LENS_LOCAL_DB_PASSWORD:-lens_local}
+      POSTGRES_DB: lens
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - lens_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lens -d lens"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  lens_pgdata:
+    name: lens_pgdata
