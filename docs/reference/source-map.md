@@ -42,6 +42,7 @@ src/lens/
 |   +-- __init__.py
 |   +-- configuration.py
 |   +-- csharp.py
+|   +-- dart.py
 |   +-- documents.py
 |   +-- dotnet_project.py
 |   +-- frontend.py
@@ -70,6 +71,9 @@ src/lens/
 |   +-- retrieval.py
 |   +-- semantic_retrieval.py
 |   `-- semantics.py
++-- service/
+|   +-- __init__.py
+|   `-- api.py
 +-- __init__.py
 `-- __main__.py
 ```
@@ -93,7 +97,15 @@ The user-facing command dispatcher.
 - `output(value)` prints JSON with indentation and a `str` fallback.
 - `main(argv=None)` parses commands and options, loads settings, configures logging, resolves the selected project, then dispatches indexing, parsing, search, ask, evaluation, database, model, and project operations. It returns an exit status and handles expected operational errors at the CLI boundary.
 
-The command parser exposes `index`, `parse`, `inspect`, `search`, `ask`, `evaluate`, `project`, `model`, `list models`, `db-init`, `db-check`, `db-schema`, and `sql`. SQL generation and execution are delegated to `database.application`; the CLI is responsible for arguments, confirmation flow, and displaying executed results.
+The command parser exposes `serve`, `index`, `parse`, `inspect`, `search`, `ask`, `evaluate`, `project`, `model`, `list models`, `db-init`, `db-check`, `db-schema`, and `sql`. SQL generation and execution are delegated to `database.application`; the CLI is responsible for arguments, confirmation flow, and displaying executed results. The service SQL endpoint returns validated SQL only.
+
+### `src/lens/service/api.py`
+
+Implements the local JSON HTTP service with the Python standard library's threaded HTTP server. `LensService` binds one configured repository root, a PostgreSQL store, local embedding provider, and lazy answer provider. It exposes readiness, indexing, grounded ask, and validated SQL-generation operations. Configuration file paths supplied to SQL requests are confined to the configured project root. `/v1/sql` calls schema discovery and SQL validation but never calls the CLI execution workflow.
+
+### `sdks/python/src/lens_client/__init__.py`
+
+The separate `lens-client` distribution provides `LensClient.health()`, `ask()`, `sql()`, and `index()` over the HTTP contract. `LensClientError` represents transport/protocol errors. This package has no third-party dependencies; it does not instantiate models, read project files, authenticate end users, or execute SQL. It sends requests to an already-running local Lens service.
 
 ### `src/lens/core/config.py`
 
@@ -190,11 +202,11 @@ Expands retrieval across graph relationships for queries that need evidence span
 - `STOP` is the stop-word set.
 - `terms(value)` extracts normalized query terms.
 - `intent(query)` identifies query shapes that benefit from chain expansion.
-- `expand(query, ranked, graph, get_chunks, top_k, max_depth=8)` traverses selected graph paths, retrieves linked chunks, and augments/reranks evidence within depth/result bounds.
+- `expand(query, ranked, graph, get_chunks, top_k, max_depth=8)` traverses selected graph paths, retrieves linked chunks, and updates the bounded evidence selection.
 
 ### `src/lens/search/ranking.py`
 
-- `rank(keyword, vector, alpha=0.5, mode='hybrid', query=None)` combines lexical and vector candidate lists according to the selected mode and weighting, then applies query-sensitive ranking signals and produces ordered `SearchHit` results.
+- `rank(keyword, vector, alpha=0.5, mode='hybrid', query=None)` combines lexical and vector candidate lists with weighted reciprocal-rank fusion (RRF constant 60), then applies query-sensitive ranking signals and produces ordered `SearchHit` results.
 
 ### `src/lens/search/ranking_signals.py`
 
@@ -208,7 +220,7 @@ Orchestrates query understanding, search backends, document diversity, graph exp
 - `describe(hit)` serializes a hit and its scores/signals for CLI output.
 - `select_with_document_evidence(ranked, top_k, candidates=None)` may reserve a strongly topic-matched project-document chunk while retaining code evidence.
 - `SearchResponse` stores results and retrieval diagnostics.
-- `search(query, store, provider, top_k=5, alpha=0.5, mode='hybrid', project=None, multi_hop=True, max_depth=8, semantic=True)` runs enabled lexical/vector retrieval and ranking, then optionally applies multi-hop expansion and semantic prioritization. The response includes ranked evidence and diagnostic counts.
+- `search(query, store, provider, top_k=5, alpha=0.5, mode='hybrid', project=None, multi_hop=True, max_depth=8, semantic=True, candidate_limit=None)` runs enabled lexical/vector retrieval and ranking, then optionally applies multi-hop expansion and semantic prioritization. `candidate_limit` overrides the per-branch retrieval limit; the response includes ranked evidence and diagnostic counts.
 
 ### `src/lens/search/semantic_retrieval.py`
 
@@ -228,7 +240,7 @@ Rule-based query interpretation used to broaden retrieval rather than to generat
 
 ### `src/lens/evaluation/evaluation.py`
 
-- `evaluate(dataset, retrieve, k=5)` computes retrieval metrics (including Recall@K and Precision@K) over labeled expected evidence using the supplied retrieval callback. This evaluates retrieval matching, not generated-answer correctness.
+- `evaluate(dataset, retrieve, k=5)` computes retrieval metrics (including Recall@K and Precision@K) over labeled expected evidence. When the callback returns a `SearchResponse`, it also reports branch-pool coverage and classifies expected items as candidate misses, ranking misses, semantic recoveries, selection drops, or retrieved. This evaluates retrieval matching, not generated-answer correctness.
 
 ### `src/lens/evaluation/chain_evaluation.py`
 
@@ -439,6 +451,15 @@ Shared tree-sitter utilities.
 - `KINDS` and `CALLABLES` map syntax node types to entity kinds and callable nodes.
 - `descendants(node)` traverses a syntax subtree.
 - `parse(file, data)` extracts C# namespaces, types, methods, properties, and statically recognized references from syntax trees into `Knowledge`.
+
+### `src/lens/parsing/dart.py`
+
+- `_DEFINITIONS` maps Dart declaration node types to Lens entity kinds.
+- `_HTTP_METHODS` and `_CALL` recognize a bounded set of Dart client methods with literal URL arguments.
+- `_descendants(node, kind)` collects syntax nodes of a requested type; `_name(node, data)` obtains declaration names; `_parameters(signature, data)` extracts formal parameter source text.
+- `_http_requests(source, first_line=1)` extracts literal request paths, preserving interpolated path segments as placeholders instead of evaluating them.
+- `parse(file, data)` produces Dart module, class/widget, enum, function, method, and constructor symbols, import/export relationships, inheritance facts, and literal HTTP request evidence.
+- `node_text_prefix(node, data)` returns a compact declaration header for embedding context.
 
 ### `src/lens/parsing/frontend.py`
 

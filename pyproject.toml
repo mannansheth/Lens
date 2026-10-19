@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lens-rag"
-version = "0.5.0"
+version = "0.6.0"
 description = "Lens: local application intelligence and grounded retrieval"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "psycopg[binary]>=3.2,<4", "PyMySQL>=1.1,<2", "pgvector>=0.4,<0.5",
-  "tree-sitter>=0.25,<0.26", "tree-sitter-c-sharp>=0.23,<0.24",
+  "tree-sitter>=0.25,<0.26", "tree-sitter-c-sharp>=0.23,<0.24", "tree-sitter-dart>=0.1,<0.2",
   "tree-sitter-javascript>=0.25,<0.26", "tree-sitter-typescript>=0.23,<0.24",
   "tree-sitter-html>=0.23,<0.24", "tree-sitter-css>=0.23,<0.24",
   "sqlglot>=27,<29", "fastembed>=0.7,<0.9", "python-dotenv>=1,<2", "numpy>=2.1,<3",
@@ -31,7 +31,7 @@ lens = ["database/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
-pythonpath = ["src"]
+pythonpath = ["src", "sdks/python/src"]
 markers = ["integration: requires a local PostgreSQL/pgvector database", "model: requires downloaded local embedding weights"]
 
 [tool.ruff]

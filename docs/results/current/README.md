@@ -1,7 +1,7 @@
-# Current evaluation results
+# Current implementation checks
 
-This directory contains sanitized measurements for the current implementation. The source corpus identity and its source-specific labels are intentionally kept out of the public documentation. Do not add credentials, source excerpts, or private repository snapshots here.
+This directory records checks run against the current checkout. Automated test counts establish only the behaviors covered by those tests; they are not measures of general answer accuracy. Keep answer-quality evaluations tied to an explicit pipeline revision, labeled question set, provider, and index.
 
-- [Retrieval and client-answer evaluation](retrieval-client-evaluation.md)
+- [Current code, package, and deployment checks](implementation-checks.md)
 
-Automated tests verify the behavior they exercise; they are not a general measure of answer accuracy. Every evaluation report should identify its sample size, configuration, method, and limits.
+Older retrieval/answer measurements are kept in [`../archive/`](../archive/README.md) and are labeled with the implementation revision they measured.

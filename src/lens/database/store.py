@@ -15,7 +15,7 @@ from lens.core.models import DocumentChunk, Embedding, Knowledge, SearchHit, sta
 from lens.core.logging import event
 from lens.search.embeddings import validate_vectors
 
-PIPELINE_REVISION = "whole-application-v6-navigation-retrieval"
+PIPELINE_REVISION = "whole-application-v8-boilerplate-filter"
 
 
 class RetrievalStore(Protocol):

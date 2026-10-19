@@ -68,7 +68,7 @@ def test_matching_document_filename_beats_generic_code_keyword_matches():
         keyword_score=0.2)
     ranked = rank([code, guide], [], query="Explain all dependencies used")
     assert next(hit for hit in ranked if hit.chunk.id == "guide").ranking_signals["document_topic_match"]
-    assert next(hit for hit in ranked if hit.chunk.id == "guide").ranking_signals["document_topic_boost"] == 0.2
+    assert "document_topic_boost" not in next(hit for hit in ranked if hit.chunk.id == "guide").ranking_signals
     assert evidence_limit("Explain all dependencies used") == 12
     assert evidence_limit("Where is the login form defined?") == 5
     selected = select_with_document_evidence([code, code, code, code, code], 5, ranked)

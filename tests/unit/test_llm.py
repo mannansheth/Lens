@@ -274,6 +274,8 @@ def test_cli_ask_project_selection_json_and_failure(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(cli, "LocalEmbeddingProvider", lambda settings: Embeddings())
     monkeypatch.setattr(transport, "OllamaProvider", lambda settings: LLM(answer()))
     monkeypatch.setenv("LENS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_MODEL", "qwen3:8b")
     monkeypatch.chdir(roots[0])
     assert cli.main(["ask", "Which service sends messages?", "--json", "--timings"]) == 0
     captured = capsys.readouterr()

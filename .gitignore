@@ -12,6 +12,7 @@ __pycache__/
 *.sqlite*
 dist/
 build/
+sdks/node/dist/
 .idea/
 .vscode/
 *.log

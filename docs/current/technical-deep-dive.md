@@ -8,16 +8,16 @@ For the shorter conceptual overview, see [How Lens understands a project and ans
 
 Lens is a Python package and command-line application. `pyproject.toml` names the distribution `lens-rag`, requires Python 3.13 through 3.13.x, and installs the `lens` command as the entry point `lens.commands.cli:main`. The package uses a `src/` layout. The Python process running the CLI performs repository discovery, parsing, relationship resolution, embedding, retrieval, prompt construction, and provider calls.
 
-Docker Compose does **not** run the Lens Python application. It starts PostgreSQL 17 using the `pgvector/pgvector:pg17` image. The CLI normally runs on the host and connects to that service through a loopback-only published port. The container stores Lens's persistent index in the named volume `lens_pgdata`; deleting or replacing the container does not itself remove that volume. The embedding model files are a separate local cache, `.models` by default. The optional local answer provider is a third component (Ollama, installed and run separately); Gemini is an optional remote provider. Finally, a project's own application database is a fourth, separate data source used only by explicit database commands.
+Docker Compose can run both Lens and its PostgreSQL 17/pgvector index. The `engine` container includes the Python package and local HTTP API; the `database` container persists its index in the named volume `lens_pgdata`. The `lens_models` volume stores FastEmbed weights. An optional `ollama` service (Compose profile `local-llm`) can store local answer-model weights in `lens_ollama`; Gemini is an optional remote provider. The application database remains a separate data source used for schema inspection and SQL generation.
 
 | Component | Runs/stores where | Purpose |
 |---|---|---|
-| Lens CLI and Python package | Host Python environment | Orchestrates indexing and questions. |
-| FastEmbed model weights | Local cache directory, `.models` by default | Generates question and chunk vectors locally on CPU. |
+| Lens CLI and Python package | Host Python environment or Docker `engine` container | Orchestrates indexing and questions; exposes the optional HTTP API. |
+| FastEmbed model weights | `.models` locally or Docker volume `lens_models` | Generates question and chunk vectors locally on CPU. |
 | PostgreSQL + pgvector | Docker container `lens-postgres`; volume `lens_pgdata` | Stores projects, source records, relationships, chunks, and embeddings. |
-| Ollama (optional) | Separately installed local service | Local language-model generation for answers. |
+| Ollama (optional) | Local service or Compose `ollama` container with `local-llm` profile | Local language-model generation for answers. |
 | Gemini (optional) | External Google API when explicitly configured | Remote language-model generation; question/evidence leave the machine. |
-| Application database (optional) | Whatever host/server its project configuration describes | Live schema inspection and explicitly confirmed read-only SQL execution. |
+| Application database (optional) | Whatever host/server its project configuration describes | Schema inspection and validated SQL generation. The HTTP SDK/API does not execute SQL; the developer CLI has a separate confirmation-based execution path. |
 
 The Compose excerpt below is the actual service definition. The loopback bind means the published PostgreSQL port is configured for access from the host, rather than all network interfaces. `pg_isready` is used as the container health check. The database password has a local development default; deployment operators should set `LENS_LOCAL_DB_PASSWORD` and the matching Lens `DATABASE_URL` appropriately.
 
@@ -233,25 +233,27 @@ In hybrid mode, PostgreSQL full-text retrieval and question-vector retrieval are
 
 The vector branch is project-scoped and filters by embedding model and dimension. For the default 384-dimensional vector it casts to the partial 384-vector index expression. The current implementation disables PostgreSQL index scans within this query to preserve exact project-scoped cosine ordering; other vector dimensions use the vector column directly and exact ordering. This favors predictable exact ranking over approximate-index speed for this retrieval query.
 
-### 5.2 Hybrid score and ranking rules
+### 5.2 Reciprocal-rank fusion and ranking rules
 
-Lens normalizes lexical scores by the maximum lexical score in that keyword result set and clips vector similarities into `[0, 1]`. It then computes:
+Lexical relevance values and cosine similarities use different scales, so Lens fuses their result positions with weighted reciprocal-rank fusion (RRF). For chunk `c`, the branch contribution is `61 / (60 + rank(c))`; a chunk absent from a branch contributes zero. The default constant is 60 and `alpha` defaults to 0.5. If only one branch has candidates and its configured weight is non-zero, its available weight is renormalized to one.
 
-**hybrid_score(c) = alpha × keyword_score(c) + (1 − alpha) × vector_score(c)**
-
-`alpha` is validated in `[0, 1]`; the configured default is `0.5`. The expression is not the whole ranking policy. In non-vector mode, candidate order first prioritizes a matching relationship/API path/UI route, then exact identifier, requested source scope, requested entity kind, then the hybrid score with document-topic and navigation boosts, and finally a stable chunk ID. Consequently, the displayed hybrid score alone does not fully explain final rank. Vector-only mode intentionally sorts by vector score and stable ID without those additional query-aware signals.
-
-```python
-item.hybrid_score = (
-    item.keyword_score
-    if mode == "keyword"
-    else item.vector_score
-    if mode == "vector"
-    else alpha * item.keyword_score + (1 - alpha) * item.vector_score
-)
+```text
+RRF(c) = [alpha * 61 / (60 + lexical_rank(c))
+        + (1 - alpha) * 61 / (60 + vector_rank(c))] / available_weight
 ```
 
-Source: [ranking.py](../../src/lens/search/ranking.py#L20-L27).
+The score follows stable categorical priorities for discovered relationship/API/UI-route matches, exact identifiers, requested source scope, and requested entity kind. The score is then used in descending order, with a stable chunk ID tie-breaker. Repository-specific synonyms and document/navigation numeric boosts are not part of this ranking. Keyword-only mode uses lexical relevance; vector-only mode is a pure vector baseline.
+
+```python
+lexical = ((RRF_CONSTANT + 1) / (RRF_CONSTANT + keyword_ranks[item.chunk.id])
+           if item.chunk.id in keyword_ranks else 0.0)
+semantic = ((RRF_CONSTANT + 1) / (RRF_CONSTANT + vector_ranks[item.chunk.id])
+            if item.chunk.id in vector_ranks else 0.0)
+item.hybrid_score = ((alpha * lexical + (1.0 - alpha) * semantic) / available_weight
+                     if available_weight else 0.0)
+```
+
+Source: [ranking.py](../../src/lens/search/ranking.py).
 
 ### 5.3 Document, concept, and navigation retrieval
 
@@ -304,9 +306,9 @@ The generation flow calls the search pipeline before synthesis, and adds timing 
 
 ## 7. Application database and SQL workflow
 
-Application-data questions are separate from repository RAG. When explicitly requested, Lens discovers supported project configuration (including common environment settings and .NET application settings), connects using the database driver, introspects tables/columns/foreign keys/indexes and supported routines, selects relevant schema/routine details, and asks the provider to draft a read-only query. The query is validated before execution; the CLI requires confirmation, applies a row limit, executes, and formats the result. MySQL is supported through PyMySQL. Stored-routine visibility depends on the database server's metadata and the user's permissions. Lens's PostgreSQL index credentials must never be confused with application database credentials.
+Application-data questions are separate from repository RAG. When explicitly requested, Lens discovers supported project configuration (including common environment settings and .NET application settings), connects using the database driver, introspects tables/columns/foreign keys/indexes and supported routines, selects relevant schema/routine details, and asks the provider to draft a read-only query. The query is validated. The SDK/API returns the SQL and dialect, without execution or rows. The developer CLI separately requires confirmation, applies a row limit, executes, and formats the result. MySQL is supported through PyMySQL. Stored-routine visibility depends on the database server's metadata and the user's permissions. Lens's PostgreSQL index credentials must never be confused with application database credentials.
 
-SQL generation is not equivalent to unrestricted model access to the database. The provider sees filtered schema metadata, not live rows, until an explicitly confirmed query is run. The host application or operator remains responsible for access control around who is allowed to invoke these operations.
+SQL generation is not equivalent to unrestricted model access to the database. The provider sees filtered schema metadata, not live rows, during generation. The host application remains responsible for caller authentication, authorization, and any query execution; the SDK/API never runs the generated SQL. The interactive developer CLI has an explicit-confirmation execution workflow for an operator.
 
 ## 8. Security, privacy, and operational limits
 
@@ -336,17 +338,17 @@ The main environment values and their current defaults are:
 | `LLM_OUTPUT_TOKENS` | `1024` output bound in the sample configuration |
 | `GEMINI_API_KEY` | Empty unless the optional Gemini provider is deliberately enabled |
 
-The setup guide covers exact commands. A concise fresh-clone sequence is: create a Python 3.13 virtual environment, install the editable package, copy `.env.example`, start Compose, initialize the Lens DB schema, download the embedding weights, configure an answer provider, then index/select/query a project. The model download and first embedding generation require network access unless the model weights are already cached. PostgreSQL must be running for indexing and retrieval.
+The host-CLI setup requires Python 3.13; the Compose deployment requires Docker/Compose but not host Python or PostgreSQL. Compose waits for PostgreSQL, applies migrations in a one-shot service, and starts the engine. The first image build and model download require network access unless dependencies and weights are already cached. Full deployment instructions are in the release guide.
 
 ## 10. Formulas and how to interpret them
 
-There are three mathematical expressions central to this implementation:
+Three mathematical expressions are central to the current implementation:
 
-1. **Cosine similarity:** **cos(q, d) = dot(q, d) / (norm(q) × norm(d))**. `q` is the question vector and `d` the candidate chunk vector. PostgreSQL's cosine distance is converted to a similarity score by **similarity = 1 − cosine_distance**.
-2. **Hybrid fusion:** **H(c) = alpha × K(c) + (1 − alpha) × V(c)**. `K(c)` is the normalized keyword score, `V(c)` is the bounded vector similarity, and `alpha` lies between 0 and 1 (default 0.5). This is the score component before categorical priority and other ranking boosts.
-3. **Retrieval recall at k:** **recall@k = relevant results in the first k positions / all labeled relevant results**. It measures whether a known relevant source was retrieved near the top. It does not measure answer correctness or entailment.
+1. **Cosine similarity:** `cos(q, d) = dot(q, d) / (norm(q) * norm(d))`. `q` is the question vector and `d` the candidate chunk vector. PostgreSQL cosine distance is converted to similarity by `similarity = 1 - cosine_distance`.
+2. **Weighted reciprocal-rank fusion:** `RRF(c) = [alpha * 61/(60 + r_k(c)) + (1-alpha) * 61/(60 + r_v(c))] / available_weight`. `r_k` and `r_v` are one-based lexical and vector ranks; a missing branch contributes zero. Lens uses constant 60 and default `alpha=0.5`; branch weights are renormalized when a branch has no candidates. Categorical query signals are applied before the fused score in final sorting.
+3. **Retrieval recall at k:** `recall@k = relevant results in the first k positions / all labeled relevant results`. It measures whether known relevant evidence was retrieved near the top; it does not measure answer correctness or entailment.
 
-None of these values is a calibrated probability that an answer is correct. The embedding similarity and hybrid score are ranking signals only.
+None of these values is a calibrated probability that an answer is correct. Embedding similarity and RRF are ranking signals only.
 
 ## 11. Representative command sequence
 

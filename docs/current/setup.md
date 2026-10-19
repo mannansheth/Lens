@@ -1,5 +1,7 @@
 # Install and initialize Lens
 
+For a host application that should call Lens as a local sidecar, use the [Docker deployment and release guide](../release/deployment.md). That path does not require host Python/PostgreSQL; it includes the first-run setup, local model choices, API contract, and reindex hooks. The instructions below initialize the developer CLI directly on the host.
+
 These steps start Lens from a fresh clone on Windows with PowerShell. Lens needs Python 3.13, Git, and Docker Desktop with Docker Compose. An internet connection is needed for Python packages and the first download of the local embedding model.
 
 ## 1. Clone and install
@@ -62,6 +64,6 @@ Ollama sends prompts to the configured local Ollama host. Gemini sends the quest
 
 ## Configuration and database access
 
-Lens reads its own `.env`; it does not load a scanned repository's environment file as Lens configuration. To inspect or query the application's separate database, pass its configuration explicitly, for example `lens db-schema --project C:\path\to\repository --env-file C:\path\to\repository\.env` or use `--config-file` for an `appsettings.json` file. `lens sql` only executes a generated, validated read-only query after confirmation.
+Lens reads its own `.env`; it does not load a scanned repository's environment file as Lens configuration. To inspect or query the application's separate database, pass its configuration explicitly, for example `lens db-schema --project C:\path\to\repository --env-file C:\path\to\repository\.env` or use `--config-file` for an `appsettings.json` file. The developer CLI's `lens sql` asks before executing its validated read-only query. The host-application SDK/API route `/v1/sql` returns SQL only and never executes it.
 
 For all commands and options, run `lens --help` or see the [CLI guide](commands.md). Never commit `.env`, API keys, or database credentials.

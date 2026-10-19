@@ -44,6 +44,7 @@ tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.2
 tree-sitter-html==0.23.2
 tree-sitter-css==0.23.2
+tree-sitter-dart==0.1.0
 typing_extensions==4.16.0
 tzdata==2026.5
 urllib3==2.8.0

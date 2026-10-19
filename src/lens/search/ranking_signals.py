@@ -6,7 +6,7 @@ from lens.search.frontend_resolution import path_matches
 
 
 NAVIGATION_QUERY = re.compile(
-    r"\b(page|screen|menu|navigate|navigation|access|open|find|where|edit|view|export|invoice|journal|employee|payroll|billing|change|update|manage|settings|profile|password|book|appointment|therapist|message|chat)\b",
+    r"\b(page|screen|menu|navigate|navigation|access|open|find|edit|view|export|change|update|manage)\b|\bwhere\s+(?:can|do|should)\s+i\s+(?:go|find|open|access)\b|\bhow\s+(?:can|do)\s+i\s+(?:get\s+to|open|find|access)\b",
     re.I,
 )
 
@@ -38,19 +38,11 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
                    "on", "me", "my", "this", "that", "staff", "user", "users",
                    "please", "company", "people", "show", "tell", "about", "get", "give"}
         query_terms = words(query) - ignored
-        # Expand common user vocabulary only for ranking candidates; this never
-        # establishes support or changes the abstention contract.
-        synonyms = {"edit": {"update", "modify"}, "information": {"info", "details", "profile"},
-                    "payroll": {"salary", "wage"}, "invoice": {"invoices"},
-                    "receipt": {"receipts", "payment"},
-                    "review": {"summary", "billing"}, "export": {"excel", "download"},
-                    "change": {"update", "edit"}, "password": {"credential", "profile", "settings"},
-                    "message": {"chat", "messages"}, "book": {"booking", "schedule"},
-                    "info": {"details", "information", "profile"},
-                    "particular": {"selected", "id", "specific"}}
+        # Keep this signal corpus-neutral: only exact lexical overlap with
+        # indexed navigation evidence is considered here. General synonym
+        # expansion belongs in the language model/embedding representation,
+        # not in repository-specific hand-written ranking rules.
         expanded = set(query_terms)
-        for term in query_terms:
-            expanded.update(synonyms.get(term, ()))
         evidence_text = " ".join([
             chunk.name, chunk.file, str(chunk.metadata.get("page_title", "")),
             " ".join(str(value) for value in chunk.metadata.get("ui_text", [])),
@@ -63,55 +55,17 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
             str((chunk.metadata.get("endpoint") or {}).get("path", "")),
         ])
         evidence_terms = words(evidence_text)
-        for link in chunk.metadata.get("navigation_links", []):
-            for parameter in link.get("query_parameters", []):
-                key = str(parameter).lower()
-                if key.startswith("journal"):
-                    evidence_terms.add("journal")
-                if "id" in key:
-                    evidence_terms.add("id")
-                if "year" in key:
-                    evidence_terms.add("year")
-                if "month" in key:
-                    evidence_terms.add("month")
-                if "company" in key:
-                    evidence_terms.add("company")
-                if "employee" in key or key.startswith("emp"):
-                    evidence_terms.add("employee")
-        specific_query = query_terms - {"journal", "employee", "client", "staff", "page", "information", "info"}
-        weights = {}
         for term in sorted(expanded):
             if term in evidence_terms:
-                weight = 0.45 if term in {"journal", "employee", "client"} and specific_query else 1.0
-                navigation_score += weight
+                navigation_score += 1.0
                 navigation_terms.append(term)
-                weights[term] = weight
-        # Score a destination from its own route evidence. Combining tokens
-        # across unrelated links on a large page can make a generic Journal
-        # screen look like an invoice destination simply because some other
-        # link mentions invoices. Keep the best individual route as a distinct
-        # feature and reward route parameters that express the requested scope.
+        # Score each route independently so tokens from unrelated links on a
+        # large page cannot combine into a false match for a destination.
         for link in chunk.metadata.get("navigation_links", []):
             link_text = " ".join(str(link.get(key, "")) for key in
                 ("label", "href", "route_template", "controller", "action", "condition", "query_parameters"))
             link_terms = words(link_text)
-            params = {str(parameter).lower() for parameter in link.get("query_parameters", [])}
-            if any(parameter.startswith("journal") for parameter in params):
-                link_terms.add("journal")
-            if any("id" in parameter for parameter in params):
-                link_terms.add("id")
-            if any("year" in parameter for parameter in params):
-                link_terms.add("year")
-            score = sum(weight for term, weight in weights.items() if term in link_terms)
-            if "message" in query_terms and re.search(r"/chat/\{dynamic\}|/chat/:[\w]+", link_text, re.I):
-                score += 1.0
-            # User phrases such as "a particular journal" imply a scoped
-            # destination; an explicit journal identifier parameter is strong
-            # evidence even if the wording uses a different synonym.
-            if "particular" in query_terms and ("invoice" in link_terms or "invoices" in link_terms) and (
-                    any(parameter.startswith("journal") and "id" in parameter for parameter in params) or
-                    re.search(r"journal\w*id|journal\{[^}]*id", link_text, re.I)):
-                score += 1.25
+            score = len(query_terms & link_terms)
             route_feature_score = max(route_feature_score, score)
         # React Router pages carry a statically resolved incoming route rather
         # than a Razor-style navigation link. Use that page's own visible text
@@ -124,17 +78,12 @@ def signals(query: str, chunk: DocumentChunk) -> dict:
             route_terms = words(route_text)
             visible_terms = words(" ".join(str(value) for value in chunk.metadata.get("ui_text", [])))
             page_score = len(query_terms & route_terms) + min(1.5, 0.5 * len(query_terms & visible_terms))
-            if "message" in query_terms and any(re.search(r"/chat/[:*]", str(route.get("path", "")), re.I)
-                                                  for route in chunk.metadata.get("incoming_routes", [])):
-                page_score += 1.0
             route_feature_score = max(route_feature_score, page_score)
         endpoint = chunk.metadata.get("endpoint") or {}
         if endpoint:
             endpoint_terms = words(" ".join([chunk.name, str(endpoint.get("method", "")),
                                              str(endpoint.get("path", ""))]))
-            route_feature_score = max(route_feature_score, sum(
-                1.0 for term in expanded if term in endpoint_terms
-            ))
+            route_feature_score = max(route_feature_score, len(expanded & endpoint_terms))
     relation_kind = "RENDERS" if re.search(r"\b(render|renders|rendering)\b", lower) else "CALLS" if re.search(r"\b(call|calls|calling)\b", lower) else "IMPORTS" if re.search(r"\b(import|imports)\b", lower) else None
     relationships = chunk.metadata.get("relation_evidence", [])
     matching = [relation for relation in relationships if relation["direction"] == "outgoing"

@@ -1,5 +1,6 @@
 """Navigation evidence extraction and client-facing structured destinations."""
 from types import SimpleNamespace
+import pytest
 
 from lens.repository.indexing import parse_repository
 from lens.repository.knowledge import chunks
@@ -235,14 +236,15 @@ def test_controller_action_link_is_not_misreported_as_a_literal_url():
     assert target["route_expression"].startswith("@Url.Action")
 
 
-def test_multi_term_feature_match_outscores_generic_shared_journal_word():
-    generic = SearchHit(DocumentChunk("generic", "generic", "JournalController.AddJournal", "method",
-        "Views/Journal/AddJournal.cshtml", "razor", "add a journal", {"navigation_candidate": True,
-        "navigation_links": [{"label": "Add journal", "action": "AddJournal"}]}), hybrid_score=0.7)
-    invoice = SearchHit(DocumentChunk("invoice", "invoice", "ClientController.GetInvoiceByBillingMasterId", "method",
-        "Views/Client/ClientIndex.cshtml", "razor", "journal invoice list", {"navigation_candidate": True,
-        "navigation_links": [{"label": "Invoice for journal", "controller": "Client",
-            "action": "GetInvoiceByBillingMasterId", "href": "/Client/GetInvoiceByBillingMasterId?Journald={journalId}"}]}), hybrid_score=0.7)
-    ranked = rank([generic, invoice], [], query="Where can I find all invoices for a particular journal?")
-    assert ranked[0].chunk.id == "invoice"
-    assert ranked[0].ranking_signals["navigation_match_score"] > ranked[1].ranking_signals["navigation_match_score"]
+def test_navigation_terms_do_not_add_a_hidden_score_boost():
+    generic = SearchHit(DocumentChunk("generic", "generic", "AccountController.Home", "method",
+        "Views/Account/Home.cshtml", "razor", "account home", {"navigation_candidate": True,
+        "navigation_links": [{"label": "Account home", "action": "Home"}]}), keyword_score=1.0)
+    settings = SearchHit(DocumentChunk("settings", "settings", "AccountController.Settings", "method",
+        "Views/Account/Settings.cshtml", "razor", "account settings profile", {"navigation_candidate": True,
+        "navigation_links": [{"label": "Account settings", "action": "Settings"}]}), keyword_score=1.0)
+    ranked = rank([generic, settings], [], query="Where can I open account settings?")
+    scores = {hit.chunk.name: hit.hybrid_score for hit in ranked}
+    assert scores["AccountController.Home"] == 1.0
+    assert scores["AccountController.Settings"] == pytest.approx(61 / 62)
+    assert all("navigation_match_boost" not in hit.ranking_signals for hit in ranked)

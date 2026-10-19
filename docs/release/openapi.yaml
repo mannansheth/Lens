@@ -1,0 +1,85 @@
+openapi: 3.1.0
+info:
+  title: Lens Local API
+  version: 0.6.0
+  description: Local repository Q&A and validated SQL generation. SQL is returned and never executed by these endpoints.
+servers:
+  - url: http://127.0.0.1:8765
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Readiness check
+      responses:
+        '200':
+          description: Engine and configured index database are ready
+  /v1/index:
+    post:
+      summary: Index the configured repository root
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh: { type: boolean, default: false }
+                force: { type: boolean, default: false }
+      responses:
+        '200': { description: Index status and statistics }
+        '400': { description: Indexing error }
+  /v1/ask:
+    post:
+      summary: Retrieve evidence and generate a cited answer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string, minLength: 1, maxLength: 1000 }
+                mode: { type: string, enum: [client, developer, user], default: client }
+      responses:
+        '200': { description: Structured answer, citations, navigation data, and performance fields }
+        '400': { description: Invalid request or answer-generation error }
+  /v1/sql:
+    post:
+      summary: Generate validated read-only SQL without executing it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string, minLength: 1, maxLength: 1000 }
+                variable: { type: string, description: Optional connection-string key or variable name }
+                config_file: { type: string, description: Optional path within the configured repository root }
+                env_file: { type: string, description: Optional path within the configured repository root }
+                user_id: { type: integer, minimum: 1, description: Optional authenticated application user context. A generation hint only; the host must enforce authorization independently. }
+                record_scope: { type: string, enum: [user_records_only, all_records], description: Optional host-selected generation context. Requires user_id and is not an authorization control. }
+      responses:
+        '200':
+          description: Validated SQL text and database dialect; execution is not performed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sql, dialect, execution, validated_read_only]
+                properties:
+                  sql: { type: string }
+                  dialect: { type: string }
+                  execution: { type: string, const: not_performed }
+                  validated_read_only: { type: boolean, const: true }
+        '400': { description: Invalid request, unavailable database metadata, or rejected SQL }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Required by default deployment; configure LENS_API_KEY and send it as a bearer token.

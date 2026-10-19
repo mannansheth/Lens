@@ -28,7 +28,10 @@ class LLMSettings:
     def __post_init__(self):
         parsed = urlsplit(self.host)
         try:
-            local = parsed.hostname == "localhost" or ipaddress.ip_address(parsed.hostname).is_loopback
+            # The Compose deployment uses one fixed, private service DNS name.
+            # All host-side configurations remain loopback-only.
+            local = (parsed.hostname in {"localhost", "ollama"} or
+                     ipaddress.ip_address(parsed.hostname).is_loopback)
             parsed.port
         except (ValueError, TypeError):
             local = False

@@ -77,6 +77,7 @@ def search(
     multi_hop: bool = True,
     max_depth: int = 8,
     semantic: bool = True,
+    candidate_limit: int | None = None,
 ) -> SearchResponse:
     begun = perf_counter()
     normalized = " ".join(query.split())
@@ -94,7 +95,12 @@ def search(
     # Retrieve a wider candidate pool only for these questions so route-aware
     # ranking can surface the actual UI/action evidence.
     navigation_query = is_navigation_query(normalized)
-    limit = max(150, top_k * 8) if navigation_query else max(60, top_k * 5)
+    default_limit = max(150, top_k * 8) if navigation_query else max(60, top_k * 5)
+    if candidate_limit is not None and not 1 <= candidate_limit <= 1000:
+        raise ValueError("candidate-limit must be between 1 and 1000")
+    if candidate_limit is not None and candidate_limit < top_k:
+        raise ValueError("candidate-limit must be greater than or equal to top-k")
+    limit = default_limit if candidate_limit is None else candidate_limit
     keyword = store.keyword_search(normalized, limit, project) if mode != "vector" else []
     vector = []
     if mode != "keyword":
@@ -150,7 +156,10 @@ def search(
         "selected_files": sorted({h.chunk.file for h in final}),
         "mode": mode,
         "alpha": alpha,
-        "ranking_order": ["relationship_or_api_or_ui_route_match", "exact_identifier", "explicit_source_scope", "explicit_entity_kind", "hybrid_score_plus_document_topic_boost", "stable_id"] if mode != "vector" else ["vector_score", "stable_id"],
+        "ranking_order": (["relationship_or_api_or_ui_route_match", "exact_identifier", "explicit_source_scope",
+                           "explicit_entity_kind",
+                           "weighted_reciprocal_rank_fusion" if mode == "hybrid" else "normalized_keyword_score",
+                           "stable_id"] if mode != "vector" else ["vector_score", "stable_id"]),
         "candidate_limit_per_branch": limit,
         "keyword_results_raw": [describe(h) for h in keyword],
         "vector_results_raw": [describe(h) for h in vector],

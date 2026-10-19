@@ -49,7 +49,7 @@ Stable identifiers are derived from stable input parts rather than randomly assi
 
 Different file types need different parsing strategies:
 
-- **Tree-sitter language adapters** inspect syntax trees for supported JavaScript/TypeScript, JSX/TSX, HTML, CSS, C#, and Razor constructs. Syntax trees let an adapter distinguish a method declaration from a text occurrence of a similar name and retain source line locations. If a grammar reports recoverable errors, the parser can retain structures it recognizes and report the limitation.
+- **Tree-sitter language adapters** inspect syntax trees for supported JavaScript/TypeScript, JSX/TSX, Dart, HTML, CSS, C#, and Razor constructs. Syntax trees let an adapter distinguish a method declaration from a text occurrence of a similar name and retain source line locations. The Dart adapter captures structural classes, methods, imports, and literal HTTP paths; it does not execute Flutter code or evaluate dynamic expressions. If a grammar reports recoverable errors, the parser can retain structures it recognizes and report the limitation.
 - **Python parsing** extracts declarations and related source structure using Python's syntax facilities.
 - **SQL parsing** recognizes supported DDL and routine constructs, creates database-object entities, and extracts table/procedure references. SQL dialect and statement coverage are necessarily bounded; warnings indicate statements the adapter could not understand reliably.
 - **Configuration parsing** reads supported structured formats and flattens nested keys into searchable facts. Sensitive assignments are redacted from evidence intended for answers or traces. Configuration is evidence about declared settings, not proof that a deployment loaded or successfully used them.
@@ -116,11 +116,11 @@ The interpretation influences candidate breadth and later retrieval stages. Navi
 
 ### 4.2 Independent lexical and vector branches
 
-In hybrid mode, Lens asks PostgreSQL for lexical candidates and embeds the question for a separate vector search. Each branch returns a bounded candidate set. Lens merges candidates by chunk identity. The lexical score is normalized against the maximum lexical score in that result set; the vector score is bounded to the expected similarity range. For a candidate chunk `c`, the ordinary hybrid score is:
+In hybrid mode, Lens asks PostgreSQL for lexical candidates and embeds the question for a separate vector search. Each branch returns a bounded candidate set. Lens merges candidates by chunk identity and records each candidate's one-based position in each branch. Because PostgreSQL lexical scores and cosine similarities have different scales, Lens combines branch ranks using weighted reciprocal-rank fusion. For a candidate chunk `c`, its hybrid fusion score is:
 
-**hybrid_score(c) = alpha × lexical_score(c) + (1 − alpha) × vector_score(c)**
+**RRF(c) = [alpha * 61 / (60 + rank_lexical(c)) + (1 - alpha) * 61 / (60 + rank_vector(c))] / available_weight**
 
-`lexical_score(c)` is the candidate's lexical score normalized by the maximum lexical score in that search result set. `vector_score(c)` is its cosine-similarity score, bounded to the supported score range. `alpha` is a weight from 0 through 1; Lens defaults it to `0.5`, giving the two branches equal weight in this component of ranking. This formula is only one part of final ordering. In non-vector modes, Lens also computes inspectable signals for exact identifiers, relationship matches, source scope, entity kind, document-topic matches, and navigation/route evidence. Some signals affect ordering as prioritized categories or bounded boosts, so do not interpret `hybrid_score` alone as the final rank. Vector-only mode intentionally stays a pure vector baseline.
+`rank_lexical(c)` and `rank_vector(c)` are the candidate's one-based positions in the lexical and vector result lists; a candidate missing from one branch contributes zero for that branch. The constant 60 dampens the impact of small rank differences. `alpha` ranges from 0 to 1 and defaults to `0.5`. If one branch has no candidates and the other has non-zero configured weight, the available branch weight is renormalized. Hybrid mode then applies stable categorical priorities for discovered relationship/API/UI-route matches, exact identifiers, source scope, and entity kind, followed by descending RRF score. The formula is not the entire ordering. Vector-only mode remains a pure vector baseline; keyword-only mode uses lexical scores.
 
 Project documents receive an explicit opportunity in final selection: when the selected top results contain no directly topic-matched document and there is room, Lens reserves one such document while retaining code context. This is a selection safeguard, not a guarantee that the document is correct or current. For questions about project intent or documented procedures, relevant documentation is valuable evidence; for questions about implemented behavior or routes, code is stronger evidence of what the source currently defines. If the two disagree, the discrepancy should be exposed rather than silently resolved by assuming either is authoritative.
 
@@ -157,13 +157,13 @@ If no usable evidence is available, the answer path can abstain without invoking
 
 The project index is Lens's PostgreSQL database. The local embedding model creates the question vector; the configured answer provider generates the response.
 
-**Figure 2.** A typical question path. The database branch is used only for the Lens index; a separate SQL workflow has its own schema introspection, query validation, confirmation, and execution steps.
+**Figure 2.** A typical repository-question path. Application SQL generation is separate: the SDK/API returns validated SQL without execution, while the developer CLI may execute only after explicit operator confirmation.
 
 ## 7. Application database questions are a separate workflow
 
-Repository RAG and application-data SQL solve different problems. Repository RAG asks what the source code and documents indicate. SQL asks what rows currently exist in an application's database. Lens's application database workflow discovers supported configuration, connects through the appropriate database driver, introspects schema and supported routine metadata, selects relevant tables/routines for the question, and asks the provider to draft a read-only query. It validates the query against safety and schema rules, presents it for explicit confirmation in the CLI, applies a row bound, executes it, and formats the result.
+Repository RAG and application-data SQL solve different problems. Repository RAG asks what the source code and documents indicate. SQL generation creates a query that could ask what rows currently exist in an application's database. Lens's workflow discovers supported configuration, connects through the appropriate database driver, introspects schema and supported routine metadata, selects relevant tables/routines for the question, and asks the provider to draft a read-only query. It validates the query against safety and schema rules. The SDK/API returns the SQL text and dialect only and does not execute the query. The developer CLI has a distinct operator workflow that requests explicit confirmation, applies a row bound, executes the query, and formats the result.
 
-In this workflow, schema metadata may be supplied to generation but application rows are not sent as source evidence before execution. Live results are obtained only when the query is confirmed and executed. MySQL schema metadata can include defined foreign-key relationships; validation can prefer declared foreign-key pairs over arbitrary joins when both are available. This preference helps prevent plausible-looking but semantically incorrect joins, although it cannot establish the intended business meaning of every query. Stored-procedure support is subject to database permissions and introspection availability. See [Application database questions](database-questions.md) for configuration, permissions, and safety details.
+Schema metadata may be supplied to generation but application rows are not returned by the SDK/API. Only the separate, confirmed developer-CLI workflow obtains live results. MySQL schema metadata can include defined foreign-key relationships; validation and prompting prefer declared foreign-key pairs over arbitrary joins when both are available. This preference helps prevent plausible-looking but semantically incorrect joins, although it cannot establish the intended business meaning of every query. Stored-procedure support is subject to database permissions and introspection availability. See [Application database questions](database-questions.md) for configuration, permissions, and safety details.
 
 ## 8. Performance and evaluation: what a number means
 
@@ -178,7 +178,8 @@ Evaluation should separate the stages instead of using one “accuracy” number
 | Citation validity | Whether cited IDs resolve to returned evidence and source locations | Whether the cited source supports the wording. |
 | Answer support review | Whether a human finds each claim supported by cited evidence | General performance on unreviewed questions. |
 | Index/query/provider timings | Runtime under a recorded setup | Performance on different hardware, models, or repositories. |
-| SQL execution result | Rows returned by one query against one live database state | That the generated query represents every interpretation of the question. |
+| SDK/API SQL response | Validated SQL text and dialect derived from schema metadata | Query results, caller authorization, or that the generated query represents every interpretation of the question. |
+| Developer CLI SQL execution result | Rows returned by one query against one live database state after explicit confirmation | That the generated query represents every interpretation of the question. |
 
 For reproducibility, record the project revision, repository state, Lens and model versions, provider, settings, exact questions, expected evidence, command, and measurement method. Keep development/fixture measurements distinct from production behavior. The current evaluation record, if one exists, belongs under [`results/current`](../results/current/README.md); this conceptual guide does not claim benchmark results.
 
@@ -197,7 +198,7 @@ Here `relevant_items_found_in_top_k` counts labeled relevant items in the first 
 - **Context limits:** omitted excerpts and a bounded number of items can exclude necessary details. The context records truncation so it can be inspected.
 - **Model dependence:** providers differ in instruction following, output-format reliability, latency, and answer quality. Schema validation does not make a weak model semantically reliable.
 - **Citations:** citations establish where supplied evidence came from; semantic entailment remains a separate evaluation task.
-- **Runtime truth:** static indexing cannot establish current permissions, deployed routes/settings, successful actions, or current database contents. Only the explicitly executed database workflow observes live rows.
+- **Runtime truth:** static indexing cannot establish current permissions, deployed routes/settings, successful actions, or current database contents. Only the separate developer-CLI execution workflow observes live rows; the SDK/API does not execute SQL.
 - **Secrets:** configuration parsing and trace redaction reduce exposure, but projects should still use least-privilege credentials and avoid treating a local index or model prompt as a secret-management system.
 
 ## 10. How to inspect the stages

@@ -27,6 +27,19 @@ def test_env_directory_without_virtual_environment_marker_is_preserved(tmp_path)
     assert [file.path for file in knowledge.files] == ['env/configuration.py']
 
 
+def test_scan_ignores_macos_archive_metadata_and_appledouble_sidecars(tmp_path):
+    source = tmp_path / 'src'
+    source.mkdir()
+    (source / 'app.js').write_text('export function run() {}\n', encoding='utf-8')
+    metadata = tmp_path / '__MACOSX' / 'src'
+    metadata.mkdir(parents=True)
+    (metadata / '._app.js').write_bytes(b'AppleDouble\x00resource fork')
+    (source / '._app.js').write_bytes(b'AppleDouble\x00resource fork')
+    knowledge, _ = scan(tmp_path)
+    assert [file.path for file in knowledge.files] == ['src/app.js']
+    assert knowledge.statistics['directories_ignored'] == 1
+
+
 def test_pipeline_revision_change_reuses_unchanged_embedding_text(tmp_path):
     from lens.database.store import PIPELINE_REVISION
 

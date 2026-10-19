@@ -17,7 +17,7 @@ def test_fusion_normalizes_and_unions():
     vector = [hit("b", vector=0.9), hit("c", vector=-0.2)]
     result = rank(keyword, vector)
     assert [h.chunk.name for h in result] == ["b", "a", "c"]
-    assert result[0].hybrid_score == pytest.approx(0.7)
+    assert result[0].hybrid_score == pytest.approx(0.5 + 0.5 * 61 / 62)
     assert result[0].keyword_score == 0.5
     assert result[2].vector_score == 0
     assert keyword[0].keyword_score == 20  # Trace retains raw evidence.
@@ -27,7 +27,7 @@ def test_fusion_normalizes_and_unions():
 def test_alpha_extremes_and_ties():
     assert rank([hit("a", 2)], [hit("b", vector=1)], 1)[0].chunk.name == "a"
     assert rank([hit("a", 2)], [hit("b", vector=1)], 0)[0].chunk.name == "b"
-    assert [h.chunk.name for h in rank([], [hit("b", vector=1), hit("a", vector=1)])] == ["a", "b"]
+    assert [h.chunk.name for h in rank([], [hit("b", vector=1), hit("a", vector=1)], mode="vector")] == ["a", "b"]
     assert rank([], []) == []
     with pytest.raises(ValueError):
         rank([], [], 2)
@@ -52,11 +52,30 @@ class Provider:
 
 def test_debug_trace_and_keyword_without_model():
     response = search("  pending  amount  ", Store(), Provider(), top_k=1)
-    assert response.results[0].hybrid_score == 0.9
+    assert response.results[0].hybrid_score == 1.0
     assert response.debug["normalized_query"] == "pending amount"
     assert response.debug["candidate_merging"]["unique"] == 2
     assert response.debug["keyword_results_raw"][0]["keyword_score"] == 2
     assert search("pending amount", Store(), None, mode="keyword").results[0].hybrid_score == 1
+
+
+def test_candidate_limit_can_be_raised_without_changing_return_cutoff():
+    class LimitStore(Store):
+        def keyword_search(self, query, limit, project):
+            self.limit = limit
+            return [hit("a", 2)]
+
+    store = LimitStore()
+    response = search("pending amount", store, None, top_k=1, mode="keyword", candidate_limit=200)
+    assert store.limit == 200
+    assert len(response.results) == 1
+
+
+def test_candidate_limit_is_bounded():
+    with pytest.raises(ValueError, match="candidate-limit"):
+        search("pending amount", Store(), None, mode="keyword", candidate_limit=1001)
+    with pytest.raises(ValueError, match="greater than or equal to top-k"):
+        search("pending amount", Store(), None, top_k=5, mode="keyword", candidate_limit=4)
 
 
 @pytest.mark.parametrize("query,k", [("", 5), ("ok", 0), ("ok", 101)])
@@ -71,6 +90,35 @@ def test_recall_precision_use_labeled_sets():
     )
     assert result["mean_recall_at_k"] == 0.5
     assert result["mean_precision_at_k"] == pytest.approx(1 / 3)
+
+
+def test_retrieval_diagnostics_separate_candidate_and_ranking_misses():
+    from types import SimpleNamespace
+
+    names = [f"decoy-{i}" for i in range(24)] + ["b"]
+    debug = {
+        "keyword_results_raw": [{"item": name} for name in names],
+        "vector_results_raw": [{"item": "a"}],
+        "normalized_and_hybrid_scores": [{"item": f"rank-{i}"} for i in range(5)] + [{"item": "b"}],
+        "considered_candidates": [{"item": name} for name in [*names, "a"]],
+    }
+    response = SimpleNamespace(results=[hit("a")], debug=debug)
+    result = evaluate([{"question": "q", "expected": ["a", "b"]}], lambda _: response, 5)
+    diagnostic = result["questions"][0]["retrieval_diagnostics"]
+    assert diagnostic["branch_candidate_recall_at_20"] == 0.5
+    assert diagnostic["branch_candidate_recall_at_50"] == 1.0
+    assert diagnostic["expected_item_diagnosis"] == {"a": "retrieved", "b": "ranking_miss"}
+
+
+def test_retrieval_diagnostics_classify_absent_evidence_as_candidate_miss():
+    from types import SimpleNamespace
+
+    response = SimpleNamespace(results=[], debug={
+        "keyword_results_raw": [], "vector_results_raw": [],
+        "normalized_and_hybrid_scores": [], "considered_candidates": [],
+    })
+    result = evaluate([{"question": "q", "expected": ["missing"]}], lambda _: response, 5)
+    assert result["diagnostics"]["expected_item_outcomes"] == {"candidate_miss": 1}
 
 
 @pytest.mark.parametrize(
@@ -157,11 +205,11 @@ def test_feature_questions_rank_routed_react_pages_using_visible_text():
 
 def test_client_navigation_matches_semantic_feature_terms_to_api_paths():
     from lens.search.ranking_signals import signals
-    endpoint = hit("POST /book").chunk
+    endpoint = hit("POST /appointment/book").chunk
     endpoint.kind = "endpoint"
     endpoint.metadata.update(navigation_candidate=True,
-                             endpoint={"method": "POST", "path": "/book"})
-    result = signals("How do users book an appointment with a therapist?", endpoint)
+                                 endpoint={"method": "POST", "path": "/appointment/book"})
+    result = signals("Where can a user open the appointment booking page?", endpoint)
     assert result["navigation_query"]
     assert result["navigation_route_feature_score"] > 0
 

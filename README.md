@@ -1,6 +1,26 @@
 # Lens
 
-Lens is a local-first codebase understanding and retrieval-augmented answer assistant. It parses application source and project documentation, indexes symbols and static relationships, combines lexical and vector retrieval, and returns evidence-cited answers. Its CLI also supports schema-aware SQL generation with read-only validation and explicit execution confirmation.
+Lens is a local-first codebase understanding and retrieval-augmented answer assistant. It parses application source and project documentation, indexes symbols and static relationships, combines lexical and vector retrieval, and returns evidence-cited answers. Use the CLI for developer workflows, or run the Docker Compose engine beside a host application and call its language-neutral HTTP API. The SDK/API returns validated SQL only; the developer CLI retains its separate confirmation-based execution workflow.
+
+## Run Lens beside an application
+
+Lens can run as a Docker Compose sidecar, so the host application does not need Python or PostgreSQL installed. Docker supplies the engine, PostgreSQL/pgvector index, and persistent model volumes. The source tree is mounted read-only. See the detailed [local deployment and release guide](docs/release/deployment.md) for first-run setup, providers, API keys, reindex hooks, upgrades, and security boundaries.
+
+The short version is:
+
+```sh
+cp .env.example .env  # Set LENS_PROJECT_PATH and a private LENS_API_KEY first.
+docker compose --profile sidecar --profile local-llm up -d --build
+docker compose exec ollama ollama pull qwen3:8b
+docker compose run --rm engine model-download
+docker compose run --rm engine index /workspace
+```
+
+Use `docker compose --profile sidecar up -d --build` without the `local-llm` profile when `.env` selects Gemini. Lens publishes the engine on `127.0.0.1:8765`; the host app sends authenticated requests to `/v1/ask`, `/v1/sql`, or `/v1/index`. The API never executes returned SQL. See the [OpenAPI contract](docs/release/openapi.yaml).
+
+The current repository includes the deployment image, service, OpenAPI contract, and dependency-free Python and Node clients under `sdks/`. Install the clients from a checkout with `python -m pip install ./sdks/python` or `npm install ./sdks/node`. The Node client is for trusted server-side Node.js code; keep its API key out of browser bundles. These SDK packages are not published yet, and prebuilt registry images are not available.
+
+After copying `.env.example`, edit `.env` before starting Compose: point `LENS_PROJECT_PATH` at the application source and replace `LENS_API_KEY` with a private random value. The complete provider, container-network, volume, reindex-hook, and upgrade instructions are in the [deployment guide](docs/release/deployment.md).
 
 ## Quick start on Windows
 
@@ -136,7 +156,7 @@ For macOS and Linux, install the same prerequisites and Python 3.13, create the 
 
 ## Privacy and data boundaries
 
-FastEmbed runs locally. With the local Ollama provider, answer generation is also intended to run on your machine; confirm Ollama is using local model weights. The supplied Docker Compose file runs PostgreSQL for Lens's own index and does not run Lens itself. Gemini is an optional remote answer provider: it sends the question and selected source evidence to Google. Review [provider configuration](docs/current/providers.md) before using it with private source code. The indexed application is analyzed statically; Lens does not run it.
+FastEmbed runs locally: on the host for CLI use and inside the Lens engine container for Compose deployments. With the local Ollama provider, answer generation also runs on the machine hosting the Compose stack after model weights are available. Docker Compose runs the Lens engine, PostgreSQL/pgvector index, and optionally Ollama; the source repository is mounted read-only. Gemini is an optional remote answer provider: it sends the question and selected source evidence to Google. Review [provider configuration](docs/current/providers.md) before using it with private source code. Lens analyzes the indexed application statically; it does not run that application.
 
 ## Documentation
 
@@ -147,6 +167,8 @@ FastEmbed runs locally. With the local Ollama provider, answer generation is als
 - [How the RAG pipeline works](docs/current/rag-pipeline.md)
 - [Technical deep dive with source excerpts](docs/current/technical-deep-dive.md)
 - [Current implementation status and limits](docs/current/mvp-status.md)
+- [Local deployment, HTTP API, SDK contract, and release checklist](docs/release/deployment.md)
+- [OpenAPI specification](docs/release/openapi.yaml)
 - [File-by-file source and API reference](docs/reference/source-map.md)
 - [Validation and tests](docs/current/validation.md)
 

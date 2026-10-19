@@ -24,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("db-init", help="Apply the idempotent schema migrations")
+    serve_parser = commands.add_parser("serve", help="Run the local Lens HTTP API for host applications and SDKs")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--project", type=Path, help="Repository root; defaults to LENS_PROJECT_PATH or the current directory")
     commands.add_parser(
         "model-download", help="Download/load public weights; source is never uploaded"
     )
@@ -45,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     search_parser.add_argument("--no-semantic", action="store_true", help="Use Phase 3 candidate/ranking behavior")
     search_parser.add_argument("--no-multi-hop", action="store_true", help="Use ordinary Phase 2 retrieval")
     search_parser.add_argument("--max-depth", type=int, default=8, help="Maximum static evidence-chain hops (1-16)")
+    search_parser.add_argument("--candidate-limit", type=int,
+                               help="Override the lexical/vector candidate count per branch (1-1000)")
     ask_parser = commands.add_parser("ask", help="Grounded developer/client Q&A or unexecuted user intent")
     ask_parser.add_argument("query")
     ask_parser.add_argument("--mode", choices=["developer", "user", "client"], default="developer")
@@ -63,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     eval_parser.add_argument("dataset", type=Path)
     eval_parser.add_argument("--compare", action="store_true", help="Compare keyword, vector, and hybrid on identical labels")
     eval_parser.add_argument("--output", type=Path, help="Save evaluation JSON to a file")
+    eval_parser.add_argument("--diagnostics", action="store_true",
+                             help="Measure candidate-pool coverage and classify retrieval misses")
+    eval_parser.add_argument("--candidate-limit", type=int,
+                             help="Override the lexical/vector candidate count per branch (1-1000)")
     eval_parser.add_argument("--no-multi-hop", action="store_true")
     eval_parser.add_argument("--no-semantic", action="store_true")
     project_parser = commands.add_parser("project", help="List, select, show or remove indexed projects")
@@ -109,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = Settings.load()
         configure(settings.log_level)
+        if args.command == "serve":
+            from lens.service.api import serve
+            serve(args.host, args.port, args.project)
+            return 0
         project = stable_id(str(args.project.resolve())) if getattr(args, "project", None) else None
         if args.command == "parse":
             if not args.directory.is_dir():
@@ -289,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "search":
                 response = search(
                     args.query, store, provider, args.top_k, alpha, args.mode, project,
-                    multi_hop=not args.no_multi_hop, max_depth=args.max_depth, semantic=not args.no_semantic
+                    multi_hop=not args.no_multi_hop, max_depth=args.max_depth, semantic=not args.no_semantic,
+                    candidate_limit=args.candidate_limit
                 )
                 if args.debug or args.json:
                     output(response.debug if args.debug else [describe(h) for h in response.results])
@@ -307,17 +322,25 @@ def main(argv: list[str] | None = None) -> int:
                     dataset = [row for row in dataset if row.get("split") == args.split]
                 modes = ["keyword", "vector", "hybrid"] if args.compare else [args.mode]
                 if any("expected_paths" in row for row in dataset):
+                    if args.diagnostics:
+                        raise ValueError("Item-level diagnostics require expected chunk labels, not expected paths")
                     if not project:
                         raise ValueError("Chain evaluation requires --project for source-isolated metrics")
                     from lens.evaluation.chain_evaluation import evaluate_chains
                     graph = store.evidence_graph([project])
                     reports = {mode: evaluate_chains(dataset, lambda q, mode=mode: search(q, store, provider,
-                        args.top_k, alpha, mode, project, multi_hop=not args.no_multi_hop, semantic=not args.no_semantic), args.top_k, graph)
+                        args.top_k, alpha, mode, project, multi_hop=not args.no_multi_hop,
+                        semantic=not args.no_semantic, candidate_limit=args.candidate_limit), args.top_k, graph)
                         for mode in modes}
                 else:
-                    reports = {mode: evaluate(dataset, lambda q, mode=mode: search(q, store, provider,
-                        args.top_k, alpha, mode, project, multi_hop=not args.no_multi_hop, semantic=not args.no_semantic).results, args.top_k)
-                        for mode in modes}
+                    reports = {}
+                    for mode in modes:
+                        def retrieve_for_evaluation(query, selected_mode=mode):
+                            response = search(query, store, provider, args.top_k, alpha, selected_mode, project,
+                                               multi_hop=not args.no_multi_hop, semantic=not args.no_semantic,
+                                               candidate_limit=args.candidate_limit)
+                            return response if args.diagnostics else response.results
+                        reports[mode] = evaluate(dataset, retrieve_for_evaluation, args.top_k)
                 report = {"k": args.top_k, "alpha": alpha, "model": provider.model if provider else None,
                           "modes": reports} if args.compare else reports[args.mode]
                 if args.output:

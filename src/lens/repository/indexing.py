@@ -10,16 +10,18 @@ from lens.database.store import PIPELINE_REVISION, PostgresStore
 from lens.search.embeddings import EmbeddingProvider, validate_vectors
 from lens.repository.knowledge import chunks, resolve
 from lens.core.models import CodeFile, Embedding, Knowledge, stable_id
-from lens.parsing import csharp, frontend, sql, web, python, configuration, razor, dotnet_project, documents
+from lens.parsing import csharp, dart, frontend, sql, web, python, configuration, razor, dotnet_project, documents
 from lens.core.logging import event
 
 EXCLUDED = {".git", ".venv", "node_modules", "bin", "obj", ".models", ".local", "vendor",
             "dist", "build", "coverage", ".cache", ".next", ".nuxt", ".vite", "__pycache__",
-            "venv", "virtualenv", "site-packages", "__pypackages__", ".tox", ".nox",
+            "__macosx", ".appledouble",
+            "venv", "virtualenv", "site-packages", "__pypackages__", ".tox", ".nox", ".dart_tool",
             ".pytest_cache", ".ruff_cache", ".mypy_cache", ".bower_components", "bower_components",
             "third_party", "third-party", "__generated__", ".turbo", ".parcel-cache", ".angular",
             "publish", "testresults", ".vs", "packages"}
 PARSERS = {".cs": ("csharp", csharp.parse), ".sql": ("mysql", sql.parse),
+           ".dart": ("dart", dart.parse),
            ".js": ("javascript", frontend.parse), ".mjs": ("javascript", frontend.parse),
            ".cjs": ("javascript", frontend.parse), ".jsx": ("jsx", frontend.parse),
            ".ts": ("typescript", frontend.parse), ".tsx": ("tsx", frontend.parse),
@@ -144,6 +146,11 @@ def scan(root: Path) -> tuple[Knowledge, dict[str, bytes]]:
         for name in sorted(names):
             path = Path(directory, name)
             knowledge.statistics["files_scanned"] += 1
+            # AppleDouble sidecars (._name) contain resource-fork metadata, not
+            # source code. Archives sometimes leave them beside normal files.
+            if name.startswith("._"):
+                knowledge.statistics["files_ignored"] += 1
+                continue
             relative = path.relative_to(root)
             ignored = _is_ignored(relative, rules)
             if ignored and not _essential(relative):
@@ -232,7 +239,7 @@ def parse_repository(root: Path, scanned: tuple[Knowledge, dict[str, bytes]] | N
     knowledge.statistics["files_without_warnings"] = sum(r["status"] == "parsed" for r in knowledge.statistics["file_reports"])
     knowledge.statistics["files_by_language"] = {language: sum(f.language == language for f in knowledge.files)
                                                 for language in sorted({f.language for f in knowledge.files})}
-    knowledge.statistics["retrieval_profile"] = "frontend" if any(f.language in {"javascript", "jsx", "typescript", "tsx", "html", "css"} for f in knowledge.files) else "foundation"
+    knowledge.statistics["retrieval_profile"] = "frontend" if any(f.language in {"javascript", "jsx", "typescript", "tsx", "dart", "html", "css"} for f in knowledge.files) else "foundation"
     return knowledge
 
 

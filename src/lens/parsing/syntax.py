@@ -8,7 +8,7 @@ FUNCTIONS = {"function_declaration", "generator_function_declaration", "function
              "generator_function", "arrow_function", "method_definition"}
 
 
-@lru_cache(maxsize=6)
+@lru_cache(maxsize=8)
 def language(name: str) -> Language:
     if name in {"javascript", "jsx"}:
         import tree_sitter_javascript
@@ -23,6 +23,9 @@ def language(name: str) -> Language:
     if name == "css":
         import tree_sitter_css
         return Language(tree_sitter_css.language())
+    if name == "dart":
+        import tree_sitter_dart
+        return Language(tree_sitter_dart.language())
     raise ValueError(f"No syntax grammar for {name}")
 
 

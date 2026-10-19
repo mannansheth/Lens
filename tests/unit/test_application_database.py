@@ -151,6 +151,24 @@ def test_generation_receives_actual_schema_without_configuration(database):
         generate_sql('total amount', inspect_schema(database), SimpleNamespace(generate=lambda *a: SimpleNamespace(text='bad')))
 
 
+def test_sql_generation_receives_authenticated_user_as_structured_context(database):
+    from lens.database.application import generate_sql
+    prompts = []
+    def generate(messages, schema):
+        prompts.append(messages[0]['content'])
+        return SimpleNamespace(text=json.dumps({'sql': 'SELECT SUM(amount) FROM orders', 'limitation': ''}))
+    provider = SimpleNamespace(generate=generate)
+    actual_schema = inspect_schema(database)
+    generate_sql('my total amount', actual_schema, provider, user_id=7,
+                 record_scope='user_records_only')
+    generate_sql('total amount', actual_schema, provider, user_id=2,
+                 record_scope='all_records')
+    assert '"authenticated_user": {"id": 7, "record_scope": "user_records_only"}' in prompts[0]
+    assert '"authenticated_user": {"id": 2, "record_scope": "all_records"}' in prompts[1]
+    with pytest.raises(ValueError, match='positive integer'):
+        generate_sql('total amount', actual_schema, provider, user_id=True)
+
+
 def test_sql_prefers_foreign_key_identity_over_matching_id_columns():
     from lens.database.application import validate_sql
     schema = {'dialect': 'mysql', 'tables': [

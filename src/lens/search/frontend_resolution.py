@@ -10,7 +10,9 @@ EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 class ModuleResolver:
     def __init__(self, knowledge: Knowledge):
         self.symbols = {s.id: s for s in knowledge.symbols}
-        self.modules = {s.file_id: s for s in knowledge.symbols if s.kind == "module"}
+        self.languages = {file.id: file.language for file in knowledge.files}
+        self.modules = {s.file_id: s for s in knowledge.symbols if s.kind == "module" and
+                        self.languages.get(s.file_id) in FRONTEND_LANGUAGES}
         self.paths = {f.path: self.modules[f.id] for f in knowledge.files if f.id in self.modules}
         self.children: dict[str, list[CodeSymbol]] = {}
         for symbol in knowledge.symbols:

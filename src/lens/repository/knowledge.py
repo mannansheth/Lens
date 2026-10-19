@@ -20,6 +20,7 @@ def resolve(knowledge: Knowledge) -> None:
     files = {file.id: file for file in knowledge.files}
     _application_links(knowledge)
     resolve_frontend(knowledge)
+    _resolve_dart_imports(knowledge)
     entities = knowledge.entities
     by_id = {e.id: e for e in entities}
     languages = {f.id: f.language for f in knowledge.files}
@@ -121,11 +122,74 @@ def resolve(knowledge: Knowledge) -> None:
             candidates = db_by_qualified.get(name.lower()) or db_by_name.get(name.lower(), [])
         elif relationship.kind == "INHERITS":
             candidates = bases_by_name.get(name, [])
+        elif relationship.kind in {"IMPLEMENTS", "MIXES_IN"}:
+            candidates = types_by_name.get(name, [])
         if len(candidates) == 1:
             relationship.target_id = candidates[0].id
             relationship.confidence = "high"
+    _resolve_dart_requests(knowledge)
     from lens.search.evidence import annotate
     annotate(knowledge)
+
+
+def _resolve_dart_imports(knowledge: Knowledge) -> None:
+    """Resolve only unambiguous relative or package:.../lib imports between Dart files."""
+    import posixpath
+
+    files = {file.id: file for file in knowledge.files}
+    modules = {symbol.file_id: symbol for symbol in knowledge.symbols
+               if symbol.kind == "module" and files.get(symbol.file_id) and
+               files[symbol.file_id].language == "dart"}
+    paths = {file.path: modules[file.id] for file in knowledge.files if file.id in modules}
+    edges = {(edge.source_id, edge.target_name): edge for edge in knowledge.relationships
+             if edge.kind == "IMPORTS_MODULE" and edge.source_id in {module.id for module in modules.values()}}
+    for file_id, module in modules.items():
+        for item in module.metadata.get("imports", []):
+            uri = item.get("source", "")
+            candidates = []
+            if uri.startswith("."):
+                path = posixpath.normpath(posixpath.join(posixpath.dirname(files[file_id].path), uri))
+                candidates = [paths[name] for name in (path, path + ".dart") if name in paths]
+            elif uri.startswith("package:"):
+                package_path = uri[len("package:"):].split("/", 1)
+                if len(package_path) == 2:
+                    suffix = "/lib/" + package_path[1]
+                    candidates = [target for name, target in paths.items() if name.endswith(suffix)]
+            if len({candidate.id for candidate in candidates}) == 1:
+                edge = edges.get((module.id, uri))
+                if edge:
+                    edge.target_id = candidates[0].id
+                    edge.confidence = "high"
+                    edge.metadata.update(rule="dart_static_import_uri", static_only=True)
+
+
+def _resolve_dart_requests(knowledge: Knowledge) -> None:
+    """Resolve Dart's literal client paths after JavaScript router mounts are known."""
+    from urllib.parse import urlsplit
+    from lens.search.frontend_resolution import path_matches
+
+    files = {file.id: file for file in knowledge.files}
+    endpoints = [symbol for symbol in knowledge.symbols if symbol.kind == "endpoint"]
+    for source in knowledge.symbols:
+        file = files.get(source.file_id)
+        if not file or file.language != "dart":
+            continue
+        for request in source.metadata.get("requests", []):
+            path = request.get("path", "")
+            request_path = urlsplit(path).path if path.startswith(("http://", "https://")) else path
+            matches = [endpoint for endpoint in endpoints
+                       if endpoint.metadata.get("method") == request.get("method") and
+                       any(path_matches(request_path, route) for route in
+                           endpoint.metadata.get("mounted_paths", [endpoint.metadata.get("path", "")]))]
+            if len(matches) != 1:
+                continue
+            request["target_id"] = matches[0].id
+            for edge in knowledge.relationships:
+                if edge.source_id == source.id and edge.kind == "REQUESTS" and edge.target_name == f"{request['method']} {path}":
+                    edge.target_id = matches[0].id
+                    edge.confidence = "static_pattern" if request.get("dynamic") else "high"
+                    edge.metadata.update(rule="unique_method_path_match", candidate_count=1,
+                                         method=request["method"], path=path, static_only=True)
 
 
 def _application_links(knowledge: Knowledge) -> None:
@@ -525,7 +589,7 @@ def chunks(knowledge: Knowledge, application: str) -> list[DocumentChunk]:
                 f"Section: {entity.qualified_name}",
                 entity.source[:900],
             ]))[:1100]
-        if file.language in {"javascript", "jsx", "typescript", "tsx", "html", "css"}:
+        if file.language in {"javascript", "jsx", "typescript", "tsx", "dart", "html", "css"}:
             from lens.repository.documents import embedding_summary, retrieval_document
             result[-1].embedding_text = embedding_summary(entity, file.path, related, paths)
             result[-1].text = retrieval_document(entity, file.path, related, paths)

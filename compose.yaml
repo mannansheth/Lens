@@ -1,4 +1,4 @@
-﻿services:
+services:
   database:
     container_name: lens-postgres
     image: pgvector/pgvector:pg17
@@ -10,11 +10,87 @@
       - "127.0.0.1:55432:5432"
     volumes:
       - lens_pgdata:/var/lib/postgresql/data
+    networks: [lens-backplane]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lens -d lens"]
       interval: 3s
       timeout: 3s
       retries: 20
+
+  migrations:
+    image: lens-engine:local
+    profiles: ["sidecar"]
+    build: .
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [lens-backplane]
+    environment:
+      DATABASE_URL: postgresql://lens:${LENS_LOCAL_DB_PASSWORD:-lens_local}@database:5432/lens
+    command: ["db-init"]
+    restart: "no"
+
+  engine:
+    container_name: lens-engine
+    image: lens-engine:local
+    profiles: ["sidecar"]
+    build: .
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    networks: [lens-backplane, lens-api, lens-egress]
+    environment:
+      APP_NAME: Lens
+      DATABASE_URL: postgresql://lens:${LENS_LOCAL_DB_PASSWORD:-lens_local}@database:5432/lens
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_CACHE_DIR: /var/lib/lens/models
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_HOST: ${LENS_OLLAMA_HOST:-http://ollama:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-600}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0}
+      LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-32768}
+      LLM_CONTEXT_CHARS: ${LLM_CONTEXT_CHARS:-12000}
+      LLM_OUTPUT_TOKENS: ${LLM_OUTPUT_TOKENS:-1024}
+      GEMINI_TIMEOUT: ${GEMINI_TIMEOUT:-60}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      LENS_API_KEY: ${LENS_API_KEY:-}
+      LENS_PROJECT_PATH: /workspace
+      HYBRID_ALPHA: ${HYBRID_ALPHA:-0.5}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - type: bind
+        source: ${LENS_PROJECT_PATH:-.}
+        target: /workspace
+        read_only: true
+      - lens_models:/var/lib/lens/models
+    ports:
+      - "127.0.0.1:${LENS_API_PORT:-8765}:8765"
+    command: ["serve", "--host", "0.0.0.0", "--port", "8765", "--project", "/workspace"]
+    restart: unless-stopped
+
+  ollama:
+    container_name: lens-ollama
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    networks: [lens-backplane, lens-egress]
+    volumes:
+      - lens_ollama:/root/.ollama
+    restart: unless-stopped
+
 volumes:
   lens_pgdata:
     name: lens_pgdata
+  lens_models:
+    name: lens_models
+  lens_ollama:
+    name: lens_ollama
+
+networks:
+  lens-backplane:
+    name: lens-backplane
+  lens-api:
+    name: lens-api
+  lens-egress:
+    name: lens-egress

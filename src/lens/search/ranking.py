@@ -1,7 +1,10 @@
-"""Explicit candidate union, normalization, and weighted score fusion."""
+"""Explicit candidate union and rank-based fusion of lexical/vector branches."""
 
 from lens.core.models import SearchHit
 from lens.search.ranking_signals import signals
+
+
+RRF_CONSTANT = 60
 
 
 def rank(
@@ -11,40 +14,40 @@ def rank(
         raise ValueError("alpha must be between 0 and 1")
     maximum = max((h.keyword_score for h in keyword), default=0.0)
     merged: dict[str, SearchHit] = {}
-    for hit in keyword:
+    keyword_ranks: dict[str, int] = {}
+    vector_ranks: dict[str, int] = {}
+    for position, hit in enumerate(keyword, 1):
         item = merged.setdefault(hit.chunk.id, SearchHit(hit.chunk))
         item.keyword_score = max(0.0, hit.keyword_score) / maximum if maximum > 0 else 0.0
-    for hit in vector:
+        keyword_ranks.setdefault(hit.chunk.id, position)
+    for position, hit in enumerate(vector, 1):
         item = merged.setdefault(hit.chunk.id, SearchHit(hit.chunk))
         item.vector_score = min(1.0, max(0.0, hit.vector_score))
+        vector_ranks.setdefault(hit.chunk.id, position)
+    available_weight = (alpha if keyword_ranks else 0.0) + (1.0 - alpha if vector_ranks else 0.0)
     for item in merged.values():
-        item.hybrid_score = (
-            item.keyword_score
-            if mode == "keyword"
-            else item.vector_score
-            if mode == "vector"
-            else alpha * item.keyword_score + (1 - alpha) * item.vector_score
-        )
+        if mode == "keyword":
+            item.hybrid_score = item.keyword_score
+        elif mode == "vector":
+            item.hybrid_score = item.vector_score
+        else:
+            # Lexical rank scores and embedding cosine scores are different
+            # quantities. Fuse their positions, rather than averaging the raw
+            # values and allowing one branch's score scale to dominate.
+            lexical = ((RRF_CONSTANT + 1) / (RRF_CONSTANT + keyword_ranks[item.chunk.id])
+                       if item.chunk.id in keyword_ranks else 0.0)
+            semantic = ((RRF_CONSTANT + 1) / (RRF_CONSTANT + vector_ranks[item.chunk.id])
+                        if item.chunk.id in vector_ranks else 0.0)
+            item.hybrid_score = ((alpha * lexical + (1.0 - alpha) * semantic) / available_weight
+                                 if available_weight else 0.0)
         if query is not None and mode != "vector":
             item.ranking_signals = signals(query, item.chunk)
-            item.ranking_signals["document_topic_boost"] = (
-                0.20 if item.ranking_signals.get("document_topic_match") else 0.0
-            )
-            item.ranking_signals["navigation_match_boost"] = min(
-                0.48, item.ranking_signals.get("navigation_match_score", 0.0) * 0.12)
-            item.ranking_signals["navigation_route_feature_boost"] = min(
-                0.90, item.ranking_signals.get("navigation_route_feature_score", 0.0) * 0.22)
     result = sorted(merged.values(), key=lambda h: (
-        -int(h.ranking_signals.get("relationship_match", False) or h.ranking_signals.get("api_path_match", False) or h.ranking_signals.get("ui_route_match", False) or
-             (h.ranking_signals.get("navigation_evidence", False) and
-              (h.ranking_signals.get("navigation_route_feature_score", 0) > 0 or
-               h.ranking_signals.get("navigation_match", False)))),
+        -int(h.ranking_signals.get("relationship_match", False) or h.ranking_signals.get("api_path_match", False) or h.ranking_signals.get("ui_route_match", False)),
         -int(h.ranking_signals.get("exact_identifier", False)),
         -int(h.ranking_signals.get("source_scope_match", False)),
         -int(h.ranking_signals.get("entity_kind_match", False)),
-        -(h.hybrid_score + h.ranking_signals.get("document_topic_boost", 0.0) +
-          h.ranking_signals.get("navigation_match_boost", 0.0) +
-          h.ranking_signals.get("navigation_route_feature_boost", 0.0)), h.chunk.id))
+        -h.hybrid_score, h.chunk.id))
     for position, item in enumerate(result, 1):
         item.rank = position
     return result

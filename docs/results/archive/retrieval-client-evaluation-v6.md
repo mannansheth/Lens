@@ -1,5 +1,7 @@
 ﻿# Retrieval and client-answer evaluation
 
+> **Historical result:** This report measures pipeline revision `whole-application-v6-navigation-retrieval`. The current indexing pipeline and ranking implementation have changed since that run, so these figures must not be interpreted as current Lens quality metrics.
+
 ## Setup
 
 Lens was evaluated against a locally indexed, multi-layer web application repository containing frontend, Node.js, Python, SQL, and Markdown material. The source remained on the local machine; only generated question prompts and retrieved context were sent to the configured answer provider for the answer checks. This report omits the repository identity, source excerpts, and source-specific expected-entity labels.
